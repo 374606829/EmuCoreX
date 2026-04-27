@@ -74,3 +74,7 @@ docs/geometry_spike_debug/
 
 # Local error dumps / investigation logs
 报错.txt
+
+# Markdown: do not version .md files except root README.md
+**/*.md
+!/README.md
