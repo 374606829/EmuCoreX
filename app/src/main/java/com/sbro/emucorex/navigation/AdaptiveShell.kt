@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tune
@@ -70,7 +71,7 @@ import com.sbro.emucorex.ui.common.rememberDebouncedClick
 import kotlinx.coroutines.launch
 
 enum class PrimaryDestination {
-    Home, Search, Formats, Achievements, Settings
+    Home, Search, Textures, Netplay, Formats, Achievements, Settings
 }
 
 private enum class MobileLeadingAction {
@@ -86,6 +87,8 @@ fun AdaptiveShell(
     drawerEnabled: Boolean = true,
     onNavigateHome: () -> Unit,
     onNavigateSearch: () -> Unit,
+    onNavigateTextures: () -> Unit = {},
+    onNavigateNetplay: () -> Unit = {},
     onNavigateFormats: () -> Unit,
     onNavigateSettings: () -> Unit,
     onNavigateAchievements: () -> Unit,
@@ -107,6 +110,8 @@ fun AdaptiveShell(
             selected = selected,
             onNavigateHome = onNavigateHome,
             onNavigateSearch = onNavigateSearch,
+            onNavigateTextures = onNavigateTextures,
+            onNavigateNetplay = onNavigateNetplay,
             onNavigateFormats = onNavigateFormats,
             onNavigateSettings = onNavigateSettings,
             onNavigateAchievements = onNavigateAchievements,
@@ -154,6 +159,8 @@ fun AdaptiveShell(
             drawerEnabled = drawerEnabled,
             onNavigateHome = onNavigateHome,
             onNavigateSearch = onNavigateSearch,
+            onNavigateTextures = onNavigateTextures,
+            onNavigateNetplay = onNavigateNetplay,
             onNavigateFormats = onNavigateFormats,
             onNavigateSettings = onNavigateSettings,
             onNavigateAchievements = onNavigateAchievements,
@@ -181,6 +188,8 @@ private fun CompactAdaptiveShell(
     drawerEnabled: Boolean,
     onNavigateHome: () -> Unit,
     onNavigateSearch: () -> Unit,
+    onNavigateTextures: () -> Unit,
+    onNavigateNetplay: () -> Unit,
     onNavigateFormats: () -> Unit,
     onNavigateSettings: () -> Unit,
     onNavigateAchievements: () -> Unit,
@@ -278,6 +287,8 @@ private fun CompactAdaptiveShell(
                     selected = selected,
                     onNavigateHome = onNavigateHome,
                     onNavigateSearch = onNavigateSearch,
+                    onNavigateTextures = onNavigateTextures,
+                    onNavigateNetplay = onNavigateNetplay,
                     onNavigateFormats = onNavigateFormats,
                     onNavigateSettings = onNavigateSettings,
                     onNavigateAchievements = onNavigateAchievements,
@@ -339,6 +350,8 @@ private fun SideNavigation(
     selected: PrimaryDestination,
     onNavigateHome: () -> Unit,
     onNavigateSearch: () -> Unit,
+    onNavigateTextures: () -> Unit,
+    onNavigateNetplay: () -> Unit,
     onNavigateFormats: () -> Unit,
     onNavigateSettings: () -> Unit,
     onNavigateAchievements: () -> Unit,
@@ -411,6 +424,14 @@ private fun SideNavigation(
         onCloseDrawer()
         onNavigateSearch()
     }
+    val navigateTextures = rememberDebouncedClick {
+        onCloseDrawer()
+        onNavigateTextures()
+    }
+    val navigateNetplay = rememberDebouncedClick {
+        onCloseDrawer()
+        onNavigateNetplay()
+    }
     val openManageFolders = onOpenManageFolders?.let {
         rememberDebouncedClick {
             onCloseDrawer()
@@ -472,6 +493,15 @@ private fun SideNavigation(
                     Modifier.focusRequester(selectedItemFocusRequester)
                 } else Modifier,
                 onClick = navigateSearch
+            )
+            ShellItem(
+                icon = Icons.Rounded.FolderOpen,
+                label = "贴图",
+                selected = selected == PrimaryDestination.Textures,
+                modifier = if (selected == PrimaryDestination.Textures && selectedItemFocusRequester != null) {
+                    Modifier.focusRequester(selectedItemFocusRequester)
+                } else Modifier,
+                onClick = navigateTextures
             )
             ShellItem(
                 icon = Icons.Rounded.Star,
@@ -569,6 +599,15 @@ private fun SideNavigation(
                         onClick = navigateDataTransfer
                     )
                 }
+                ShellItem(
+                    icon = Icons.Rounded.SportsEsports,
+                    label = "局域网联机",
+                    selected = selected == PrimaryDestination.Netplay,
+                    modifier = if (selected == PrimaryDestination.Netplay && selectedItemFocusRequester != null) {
+                        Modifier.focusRequester(selectedItemFocusRequester)
+                    } else Modifier,
+                    onClick = navigateNetplay
+                )
             }
             HorizontalDivider(
                 thickness = 1.dp,

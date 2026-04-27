@@ -71,6 +71,7 @@ object NativeApp {
     @JvmStatic external fun endSettingsBatch()
     @JvmStatic external fun setSetting(section: String, key: String, type: String, value: String)
     @JvmStatic external fun getSetting(section: String, key: String, type: String): String?
+    @JvmStatic external fun reloadTextureReplacements()
     @JvmStatic external fun onNativeSurfaceCreated()
     @JvmStatic external fun onNativeSurfaceChanged(surface: Surface, width: Int, height: Int)
     @JvmStatic external fun onNativeSurfaceDestroyed()
@@ -90,6 +91,32 @@ object NativeApp {
     @JvmStatic external fun listMemoryCards(): String?
     @JvmStatic external fun createMemoryCard(name: String, type: Int, fileType: Int): Boolean
     @JvmStatic external fun convertIsoToChd(inputIsoPath: String): Int
+
+    // ── LAN 联机 JNI 接口 ──────────────────────────────────────────────────────
+    @JvmStatic external fun lanRegisterCallback(callback: Any?)
+    @JvmStatic external fun lanStartSession(username: String, isHost: Boolean, hostAddress: String, port: Int)
+    @JvmStatic external fun lanStartSessionEx(
+        username: String,
+        isHost: Boolean,
+        hostAddress: String,
+        hostPort: Int,
+        listenPort: Int,
+        observe: Boolean,
+        saveReplay: Boolean,
+        memcardSync: Boolean,
+        clientOnlyDelay: Boolean,
+        readonlyMemcard: Boolean,
+    )
+    @JvmStatic external fun lanEndSession()
+    @JvmStatic external fun lanSendChat(message: String)
+    @JvmStatic external fun lanOnVmStarted()
+    @JvmStatic external fun lanOnVmStopped()
+    @JvmStatic external fun lanHostConfirmStart(isoPath: String, inputDelay: Int)
+    @JvmStatic external fun lanGuestConfirmReady(isoPath: String, enableCheats: Boolean): Boolean
+    @JvmStatic external fun lanGuestCancelReady()
+    @JvmStatic external fun lanIsEnabled(): Boolean
+    @JvmStatic external fun lanIsHost(): Boolean
+    @JvmStatic external fun lanSetInputDelay(delay: Int)
 
     @JvmStatic
     fun parseMemoryCardList(raw: String?): List<NativeMemoryCardInfo> {

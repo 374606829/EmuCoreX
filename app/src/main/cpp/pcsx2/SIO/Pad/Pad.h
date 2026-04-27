@@ -66,6 +66,14 @@ namespace Pad
 	// Sets the specified bind on a controller to the specified pressure (normalized to 0..1).
 	void SetControllerState(u32 controller, u32 bind, float value);
 
+	struct NetplayRedirectBypass
+	{
+		NetplayRedirectBypass();
+		~NetplayRedirectBypass();
+		NetplayRedirectBypass(const NetplayRedirectBypass&) = delete;
+		NetplayRedirectBypass& operator=(const NetplayRedirectBypass&) = delete;
+	};
+
 	bool Freeze(StateWrapper& sw);
 
 	// Sets the state of the specified macro button.

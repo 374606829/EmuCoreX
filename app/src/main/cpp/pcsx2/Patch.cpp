@@ -23,14 +23,32 @@
 #include "fmt/format.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
+#include <memory>
+#include <random>
 #include <span>
 #include <sstream>
 #include <type_traits>
+#include <unordered_set>
 #include <vector>
 
 namespace Patch
 {
+	// ── PC 全量移植：指针链表达式（§2 / §12.1） ─────────────────────────────
+	// 加载时解析存储；apply 时按 EE/IOP 走对应 MemoryInterface 解析。
+	// 两种形态：
+	//   地址链 (address chain)：'(' 前是单个数字（如 '2(...)') → 结果是 *地址*
+	//   值链  (value chain)：'(' 前为空或非单个数字 → 结果是最终地址 *读出来的值*
+	struct PointerChainExpr
+	{
+		std::string prefix;          // '(' 之前的字符
+		std::string suffix;          // ')' 之后的字符
+		u32 base = 0;                // '(' 内第一个十六进制段
+		std::vector<u32> offsets;    // '+' 分隔的剩余十六进制段
+		bool is_value_chain = false; // §12.1.2：true → 值链；false → 地址链
+	};
+
 	template <typename EnumType, class ArrayType>
 	static inline std::optional<EnumType> LookupEnumName(const std::string_view val, const ArrayType& arr)
 	{
@@ -41,6 +59,17 @@ namespace Patch
 		}
 		return std::nullopt;
 	}
+
+	// 指针表达式解析；slot 形如 "[prefix](base[+off1+off2+...])[ suffix ]"
+	// 没有匹配的小括号时返回 nullptr（视为静态十六进制）。
+	static std::unique_ptr<PointerChainExpr> ParsePointerExpr(const std::string_view slot);
+
+	// 指针链运行时解析（地址链）：返回最终地址；遇到空指针时返回 nullopt 表示该行整体跳过。
+	static std::optional<u32> ResolvePointerChain(const PointerChainExpr& expr, MemoryInterface& mem);
+
+	// §12.1：值指针链解析 — 行走链路得到地址后再读取 32 位值并返回。
+	// 用于 data 槽或 F-gate Format B 的 cond(...) 比较目标。
+	static u32 ResolveValuePointerChain(const PointerChainExpr& expr, MemoryInterface& mem);
 
 	struct PatchGroup
 	{
@@ -59,6 +88,13 @@ namespace Patch
 		void (*func)(PatchGroup* group, const std::string_view cmd, const std::string_view param);
 	};
 
+	// F-gate 块 / 槽：完整定义在文件作用域下面，这里前向声明，避免 ExtendedState 引用未知类型
+	namespace FGate
+	{
+		struct Slot;
+		struct Block;
+	}
+
 	struct ExtendedState
 	{
 		u32 skip_count = 0;
@@ -68,6 +104,15 @@ namespace Patch
 		u32 prev_cheat_addr = 0;
 		u32 last_type = 0;
 		bool null_pointer_encountered = false;
+
+		// PC 全量移植 §12.2：F-gate 累加器。
+		// 每次 ApplyPatches 进入循环前会重置，保证一组 F-block 的三行都来自同一遍
+		// 顺序遍历，跨遍历不会错位。
+		// phase: 0=未进入；1=已捕获 open；2=已捕获 close（等待第 3 行）
+		int fgate_accum_phase = 0;
+		// 缓冲块（Slot::ptr_chain 由本结构 own，析构时 reset() 释放）
+		// 用 unique_ptr 避免在头里完整定义 Block。
+		std::unique_ptr<FGate::Block> fgate_accum_block;
 	};
 
 	namespace PatchFunc
@@ -151,6 +196,360 @@ namespace Patch
 		{0, nullptr, nullptr},
 	};
 } // namespace Patch
+
+// PatchCommand 析构 / 移动赋值的实现（在 .cpp 里，因为需要 PointerChainExpr 完整类型）
+Patch::PatchCommand::~PatchCommand()
+{
+	if (data_ptr)
+		std::free(data_ptr);
+	delete ptr_addr;
+	delete ptr_data;
+}
+
+Patch::PatchCommand& Patch::PatchCommand::operator=(PatchCommand&& p)
+{
+	if (this == &p)
+		return *this;
+	if (data_ptr)
+		std::free(data_ptr);
+	delete ptr_addr;
+	delete ptr_data;
+	std::memcpy(static_cast<void*>(this), &p, sizeof(*this));
+	p.data_ptr = nullptr;
+	p.ptr_addr = nullptr;
+	p.ptr_data = nullptr;
+	return *this;
+}
+
+// ── 指针链解析（§2 of 金手指优化.md） ─────────────────────────────────────
+// 若 slot 内同时含 '(' 与 ')' 且 '(' 在 ')' 之前，按
+//   [prefix](base_hex[+offset_hex]...)[suffix]
+// 解析；否则返回 nullptr（视为静态十六进制）。
+std::unique_ptr<Patch::PointerChainExpr> Patch::ParsePointerExpr(const std::string_view slot)
+{
+	const auto lp = slot.find('(');
+	const auto rp = slot.find(')');
+	if (lp == std::string_view::npos || rp == std::string_view::npos || lp >= rp)
+		return nullptr;
+
+	auto expr = std::make_unique<PointerChainExpr>();
+	expr->prefix = std::string(slot.substr(0, lp));
+	expr->suffix = std::string(slot.substr(rp + 1));
+
+	const std::string_view inner = slot.substr(lp + 1, rp - lp - 1);
+	const std::vector<std::string_view> segs(StringUtil::SplitString(inner, '+', false));
+	if (segs.empty())
+	{
+		Console.Error(fmt::format("(Patch) Pointer expression has empty body: {}", slot));
+		return nullptr;
+	}
+
+	const auto base = StringUtil::FromChars<u32>(segs[0], 16);
+	if (!base.has_value())
+	{
+		Console.Error(fmt::format("(Patch) Pointer expression: invalid base '{}' in '{}'", segs[0], slot));
+		return nullptr;
+	}
+	expr->base = base.value();
+
+	for (size_t i = 1; i < segs.size(); i++)
+	{
+		const auto off = StringUtil::FromChars<u32>(segs[i], 16);
+		if (!off.has_value())
+		{
+			Console.Error(fmt::format("(Patch) Pointer expression: invalid offset '{}' in '{}'", segs[i], slot));
+			return nullptr;
+		}
+		expr->offsets.push_back(off.value());
+	}
+
+	// §12.1.2：地址链 vs 值链。
+	// 地址链：prefix 恰好是 '0'-'9' 单字符（如 "2(...)"）
+	// 值链：prefix 为空，或并非"恰好一个数字"
+	if (expr->prefix.empty())
+	{
+		expr->is_value_chain = true;
+	}
+	else if (expr->prefix.size() == 1 && expr->prefix[0] >= '0' && expr->prefix[0] <= '9')
+	{
+		expr->is_value_chain = false;
+	}
+	else
+	{
+		expr->is_value_chain = true;
+	}
+	return expr;
+}
+
+// ── 指针链运行时解析（地址链；§3 of 金手指优化.md） ──────────────────────
+// 走法与 PC 完全一致：先 read32(base)，逐段 += 偏移；除最后一段外都要解引用。
+// base 指针为 0 且仍有偏移，则视为该行作废，返回 nullopt。
+std::optional<u32> Patch::ResolvePointerChain(const PointerChainExpr& expr, MemoryInterface& mem)
+{
+	u32 ptr = mem.Read32(expr.base);
+	if (ptr == 0 && expr.offsets.size() > 0)
+		return std::nullopt;
+
+	const size_t n = expr.offsets.size();
+	if (n != 0)
+	{
+		for (size_t i = 0; i < n; i++)
+		{
+			ptr += expr.offsets[i];
+			if (i < n - 1)
+				ptr = mem.Read32(ptr);
+			// 最后一段不解引用 — ptr 即为最终地址
+		}
+	}
+
+	// 拼接 prefix + 可能的 '0' 填充 + 计算结果 hex + suffix；再解析为 u32。
+	std::string s = expr.prefix;
+	if (expr.prefix.size() == 1 && expr.prefix[0] >= '0' && expr.prefix[0] <= '9')
+		s += '0';
+	s += fmt::format("{:X}", ptr);
+	s += expr.suffix;
+
+	const auto resolved = StringUtil::FromChars<u32>(s, 16);
+	if (!resolved.has_value())
+	{
+		Console.Warning(fmt::format("(Patch) Pointer chain resolved string '{}' is not a valid hex u32, skipping line.", s));
+		return std::nullopt;
+	}
+	return resolved;
+}
+
+// ── §12.1：值指针链解析 ─────────────────────────────────────────────────
+// 与地址链同走链，区别是末段也解引用，结果为最终地址处的 32 位值。
+u32 Patch::ResolveValuePointerChain(const PointerChainExpr& expr, MemoryInterface& mem)
+{
+	u32 ptr = mem.Read32(expr.base);
+	if (ptr == 0 && expr.offsets.size() > 0)
+		return 0;
+
+	for (size_t i = 0; i < expr.offsets.size(); i++)
+	{
+		ptr += expr.offsets[i];
+		ptr = mem.Read32(ptr);
+	}
+	return ptr;
+}
+
+// ── §12.2：F-gate 状态机完整实现（PC 等价） ──────────────────────────────
+// 每个 F-gate 块由三行扩展行组成：
+//   Line 1: open  condition (Fxxxxxxx, extended, <config>)
+//   Line 2: close condition (Fyyyyyyy, extended, <config>)
+//   Line 3: guarded patch — 仅在 gate 打开期间应用
+namespace Patch::FGate
+{
+	struct Slot
+	{
+		u32 watch_addr = 0;
+		u8 cond = 0;
+		u32 compare_value = 0;
+		u16 hold_frames = 0;
+		bool use_ptr_chain = false;
+		Patch::PointerChainExpr* ptr_chain = nullptr;
+
+		// 运行时累计
+		u32 streak = 0;
+		bool latched = false;
+
+		Slot() = default;
+		Slot(const Slot&) = delete;
+		Slot(Slot&& o) noexcept
+		{
+			watch_addr = o.watch_addr;
+			cond = o.cond;
+			compare_value = o.compare_value;
+			hold_frames = o.hold_frames;
+			use_ptr_chain = o.use_ptr_chain;
+			ptr_chain = o.ptr_chain;
+			streak = o.streak;
+			latched = o.latched;
+			o.ptr_chain = nullptr;
+		}
+		Slot& operator=(const Slot&) = delete;
+		Slot& operator=(Slot&& o) noexcept
+		{
+			if (this != &o)
+			{
+				delete ptr_chain;
+				watch_addr = o.watch_addr;
+				cond = o.cond;
+				compare_value = o.compare_value;
+				hold_frames = o.hold_frames;
+				use_ptr_chain = o.use_ptr_chain;
+				ptr_chain = o.ptr_chain;
+				streak = o.streak;
+				latched = o.latched;
+				o.ptr_chain = nullptr;
+			}
+			return *this;
+		}
+		~Slot() { delete ptr_chain; }
+	};
+
+	struct Block
+	{
+		Slot open_slot;
+		Slot close_slot;
+		Patch::PatchCommand guarded_cmd;
+		bool has_guarded = false;
+		bool valid = false;
+
+		Block() = default;
+		Block(const Block&) = delete;
+		Block(Block&&) = default;
+		Block& operator=(const Block&) = delete;
+		Block& operator=(Block&&) = default;
+	};
+
+	static std::vector<Block> s_fgate_blocks;
+	static std::unordered_set<u64> s_fgate_registered_keys;
+
+	static u64 MakeBlockKey(u32 open_addr, u32 close_addr)
+	{
+		return (static_cast<u64>(open_addr) << 32) | static_cast<u64>(close_addr);
+	}
+
+	// D/E 风格条件比较
+	static bool EvalCondition(u8 cond, u32 mem_val, u32 target_val)
+	{
+		switch (cond)
+		{
+			case 0: return mem_val == target_val;       // equal
+			case 1: return mem_val != target_val;       // not equal
+			case 2: return mem_val < target_val;        // less than
+			case 3: return mem_val > target_val;        // greater than
+			case 4: return (mem_val & target_val) != 0; // AND non-zero
+			case 5: return (mem_val & target_val) == 0; // AND zero
+			case 6: return (mem_val | target_val) != 0; // OR non-zero
+			case 7: return (mem_val | target_val) == 0; // OR zero
+			default: return false;
+		}
+	}
+
+	static void Reset()
+	{
+		s_fgate_blocks.clear();
+		s_fgate_registered_keys.clear();
+	}
+
+	// Parse Format A (8 hex chars) 或 Format B ("c(chain)hold")
+	// Format A：[31:28]=cond，[27:16]=compare_value (12bit imm)，[15:0]=hold_frames
+	static bool ParseConfig(const std::string_view config, Slot& slot)
+	{
+		const auto lp = config.find('(');
+		if (lp != std::string_view::npos && lp >= 1)
+		{
+			const auto rp = config.find(')', lp);
+			if (rp == std::string_view::npos)
+			{
+				Console.Error(fmt::format("(Patch) F-gate Format B: missing closing ')': {}", config));
+				return false;
+			}
+
+			const std::string_view cond_str = config.substr(0, lp);
+			if (cond_str.size() != 1)
+			{
+				Console.Error(fmt::format("(Patch) F-gate Format B: cond must be single hex char: {}", config));
+				return false;
+			}
+			const auto cond_val = StringUtil::FromChars<u8>(cond_str, 16);
+			if (!cond_val.has_value())
+			{
+				Console.Error(fmt::format("(Patch) F-gate Format B: invalid cond '{}': {}", cond_str, config));
+				return false;
+			}
+			slot.cond = cond_val.value();
+
+			const std::string_view chain_body = config.substr(lp + 1, rp - lp - 1);
+			const std::vector<std::string_view> segs(StringUtil::SplitString(chain_body, '+', false));
+			if (segs.empty())
+			{
+				Console.Error(fmt::format("(Patch) F-gate Format B: empty pointer chain: {}", config));
+				return false;
+			}
+
+			auto* pce = new Patch::PointerChainExpr();
+			const auto base = StringUtil::FromChars<u32>(segs[0], 16);
+			if (!base.has_value())
+			{
+				delete pce;
+				Console.Error(fmt::format("(Patch) F-gate Format B: invalid chain base: {}", config));
+				return false;
+			}
+			pce->base = base.value();
+			pce->is_value_chain = true;
+			for (size_t i = 1; i < segs.size(); i++)
+			{
+				const auto off = StringUtil::FromChars<u32>(segs[i], 16);
+				if (!off.has_value())
+				{
+					delete pce;
+					Console.Error(fmt::format("(Patch) F-gate Format B: invalid chain offset: {}", config));
+					return false;
+				}
+				pce->offsets.push_back(off.value());
+			}
+			slot.ptr_chain = pce;
+			slot.use_ptr_chain = true;
+
+			const std::string_view hold_str = config.substr(rp + 1);
+			if (hold_str.empty())
+			{
+				Console.Error(fmt::format("(Patch) F-gate Format B: missing hold_frames: {}", config));
+				return false;
+			}
+			const auto hold = StringUtil::FromChars<u16>(hold_str, 16);
+			if (!hold.has_value())
+			{
+				Console.Error(fmt::format("(Patch) F-gate Format B: invalid hold_frames '{}': {}", hold_str, config));
+				return false;
+			}
+			slot.hold_frames = hold.value();
+			return true;
+		}
+
+		// Format A
+		if (config.size() != 8)
+		{
+			Console.Error(fmt::format("(Patch) F-gate Format A: expected 8 hex chars, got {}: {}", config.size(), config));
+			return false;
+		}
+		const auto word = StringUtil::FromChars<u32>(config, 16);
+		if (!word.has_value())
+		{
+			Console.Error(fmt::format("(Patch) F-gate Format A: invalid hex word: {}", config));
+			return false;
+		}
+		const u32 w = word.value();
+		slot.cond = static_cast<u8>((w >> 28) & 0xF);
+		slot.compare_value = (w >> 16) & 0xFFF;
+		slot.hold_frames = static_cast<u16>(w & 0xFFFF);
+		slot.use_ptr_chain = false;
+		slot.ptr_chain = nullptr;
+		return true;
+	}
+
+	// 每帧累计观察值，命中次数达到 hold_frames 时锁存
+	static void UpdateSlotStreak(Slot& slot, MemoryInterface& mem)
+	{
+		const u32 masked_addr = slot.watch_addr & 0x0FFFFFFF;
+		const u32 mem_val = mem.Read16(masked_addr);
+
+		u32 target;
+		if (slot.use_ptr_chain && slot.ptr_chain)
+			target = Patch::ResolveValuePointerChain(*slot.ptr_chain, mem);
+		else
+			target = slot.compare_value;
+
+		if (EvalCondition(slot.cond, mem_val, target))
+			slot.streak++;
+		else
+			slot.streak = 0;
+	}
+} // namespace Patch::FGate
 
 void Patch::TrimPatchLine(std::string& buffer)
 {
@@ -656,9 +1055,10 @@ u32 Patch::EnablePatches(const std::vector<PatchGroup>* patches, const std::vect
 		Console.WriteLn(Color_Green, fmt::format("Enabled patch: {}",
 										 p.name.empty() ? std::string_view("<unknown>") : std::string_view(p.name)));
 
-		// Indicate that a new group has started so that extended code state
-		// such as the skip counter can be reset.
-		s_active_patches.emplace_back(nullptr);
+		// Note: We DO NOT insert a nullptr here to reset extended code state between groups.
+		// PS2 cheat engines (and the PC emulator) concatenate all active cheats into a single list
+		// without isolating them. Many cheats rely on D/E-codes in one group controlling patches in another.
+		// State isolation is only performed between major categories (GameDB vs Game Patches vs Cheats).
 
 		for (const PatchCommand& ip : p.patches)
 		{
@@ -784,12 +1184,18 @@ void Patch::UpdateActivePatches(bool reload_enabled_list, bool verbose, bool ver
 			message.append(TRANSLATE_PLURAL_STR("Patch", "%n GameDB patches are active.", "OSD Message", gp_count));
 	}
 
+	// dual-space isolation — reset D/E/F state at GameDB -> Game patches boundary
+	s_active_patches.emplace_back(nullptr);
+
 	const u32 p_count = EnablePatches(
 		&s_game_patches, s_enabled_patches, apply_new_patches ? &s_just_enabled_patches : nullptr);
 	s_patches_counts = p_count;
 	if (p_count > 0)
 		message.append_format("{}{}", message.empty() ? "" : "\n",
 			TRANSLATE_PLURAL_STR("Patch", "%n game patches are active.", "OSD Message", p_count));
+
+	// dual-space isolation — reset D/E/F state at Game patches -> Cheats boundary
+	s_active_patches.emplace_back(nullptr);
 
 	u32 c_count = 0;
 	if (EmuConfig.EnableCheats)
@@ -897,6 +1303,10 @@ void Patch::UnloadPatches()
 	decltype(s_cheat_patches)().swap(s_cheat_patches);
 	decltype(s_game_patches)().swap(s_game_patches);
 	decltype(s_gamedb_patches)().swap(s_gamedb_patches);
+
+	// PC 全量移植 §12.2：跨游戏 / 重载补丁时清除已注册的 F-gate 块与去重表，
+	// 否则旧 gate 会残留在新游戏的帧推进里，导致写入错乱。
+	ResetFGateState();
 }
 
 // PatchFunc Functions.
@@ -906,29 +1316,29 @@ void Patch::PatchFunc::patch(PatchGroup* group, const std::string_view cmd, cons
 	Console.Error(fmt::format("(Patch) Error Parsing: {}={}: " fstring, cmd, param, __VA_ARGS__))
 
 	// [0]=PlaceToPatch,[1]=CpuType,[2]=MemAddr,[3]=OperandSize,[4]=WriteValue
+	// 当 value 形如 randint(lo,hi) 时，逗号会让 SplitString 多分一段，所以允许 6 段。
 	const std::vector<std::string_view> pieces(StringUtil::SplitString(param, ',', false));
-	if (pieces.size() != 5)
+	if (pieces.size() < 5 || pieces.size() > 6)
 	{
 		PATCH_ERROR("Expected 5 data parameters; only found {}", pieces.size());
 		return;
 	}
 
-	std::string_view addr_end, data_end;
+	std::string reconstructed_value;
+	std::string_view value_field = pieces[4];
+	if (pieces.size() == 6)
+	{
+		reconstructed_value = fmt::format("{},{}", pieces[4], pieces[5]);
+		value_field = reconstructed_value;
+	}
+
 	const std::optional<patch_place_type> placetopatch = LookupEnumName<patch_place_type>(pieces[0], s_place_to_string);
 	const std::optional<patch_cpu_type> cpu = LookupEnumName<patch_cpu_type>(pieces[1], s_cpu_to_string);
-	const std::optional<u32> addr = StringUtil::FromChars<u32>(pieces[2], 16, &addr_end);
 	const std::optional<patch_data_type> type = LookupEnumName<patch_data_type>(pieces[3], s_type_to_string);
-	std::optional<u64> data = StringUtil::FromChars<u64>(pieces[4], 16, &data_end);
-	u8* data_ptr = nullptr;
 
 	if (!placetopatch.has_value())
 	{
 		PATCH_ERROR("Invalid 'place' value '{}' (0: on boot only, 1: continuously, 2: on boot and continuously, 3: on boot and when enabled in the GUI)", pieces[0]);
-		return;
-	}
-	if (!addr.has_value() || !addr_end.empty())
-	{
-		PATCH_ERROR("Malformed address '{}', a hex number without prefix (e.g. 0123ABCD) is expected", pieces[2]);
 		return;
 	}
 	if (!cpu.has_value())
@@ -941,36 +1351,192 @@ void Patch::PatchFunc::patch(PatchGroup* group, const std::string_view cmd, cons
 		PATCH_ERROR("Unrecognized Operand Size: '{}'", pieces[3]);
 		return;
 	}
-	if (type.value() != BYTES_T)
+
+	// ── 地址槽（pieces[2]）：可能是指针表达式或静态十六进制 ──
+	std::unique_ptr<PointerChainExpr> ptr_addr_expr = ParsePointerExpr(pieces[2]);
+	u32 addr_val = 0;
+	if (!ptr_addr_expr)
 	{
-		if (!data.has_value() || !data_end.empty())
+		std::string_view addr_end;
+		const std::optional<u32> addr = StringUtil::FromChars<u32>(pieces[2], 16, &addr_end);
+		if (!addr.has_value() || !addr_end.empty())
 		{
-			PATCH_ERROR("Malformed data '{}', a hex number without prefix (e.g. 0123ABCD) is expected", pieces[4]);
+			PATCH_ERROR("Malformed address '{}', a hex number without prefix (e.g. 0123ABCD) is expected", pieces[2]);
+			return;
+		}
+		addr_val = addr.value();
+	}
+
+	// ── 值槽（value_field）：randint(lo,hi) / float / 指针表达式 / 静态 hex ──
+	bool is_random = false;
+	bool is_rand_float = false;
+	u64 rand_lo = 0, rand_hi = 0;
+	float rand_float_lo = 0.f, rand_float_hi = 0.f;
+	std::unique_ptr<PointerChainExpr> ptr_data_expr;
+	std::optional<u64> data;
+	u8* data_ptr = nullptr;
+
+	if (value_field.size() > 8 && value_field.substr(0, 8) == std::string_view("randint(") && value_field.back() == ')')
+	{
+		const auto inner = value_field.substr(8, value_field.size() - 9);
+		const auto comma = inner.find(',');
+		if (comma != std::string_view::npos)
+		{
+			auto lo_sv = inner.substr(0, comma);
+			auto hi_sv = inner.substr(comma + 1);
+			while (!lo_sv.empty() && (lo_sv.front() == ' ' || lo_sv.front() == '\t'))
+				lo_sv.remove_prefix(1);
+			while (!lo_sv.empty() && (lo_sv.back() == ' ' || lo_sv.back() == '\t'))
+				lo_sv.remove_suffix(1);
+			while (!hi_sv.empty() && (hi_sv.front() == ' ' || hi_sv.front() == '\t'))
+				hi_sv.remove_prefix(1);
+			while (!hi_sv.empty() && (hi_sv.back() == ' ' || hi_sv.back() == '\t'))
+				hi_sv.remove_suffix(1);
+			const auto lo = StringUtil::FromChars<u64>(lo_sv, 16);
+			const auto hi = StringUtil::FromChars<u64>(hi_sv, 16);
+			if (lo.has_value() && hi.has_value())
+			{
+				is_random = true;
+				rand_lo = lo.value();
+				rand_hi = hi.value();
+				if (rand_lo > rand_hi)
+					std::swap(rand_lo, rand_hi);
+				data = 0;
+			}
+			else
+			{
+				PATCH_ERROR("Invalid randint hex parameters in '{}'", value_field);
+				return;
+			}
+		}
+		else
+		{
+			PATCH_ERROR("Invalid randint syntax '{}', expected randint(lo,hi)", value_field);
 			return;
 		}
 	}
-	else
+	else if (value_field.size() > 10 && value_field.substr(0, 10) == std::string_view("randfloat(") && value_field.back() == ')')
 	{
-		// bit crappy to copy it, but eh, saves writing a new routine
-		std::optional<std::vector<u8>> bytes = StringUtil::DecodeHex(pieces[4]);
-		if (!bytes.has_value() || bytes->empty())
+		if (type.value() != FLOAT_T)
 		{
-			PATCH_ERROR("Malformed data '{}', a hex string without prefix (e.g. 0123ABCD) is expected", pieces[4]);
+			PATCH_ERROR("randfloat(lo,hi) requires operand type 'float', not '{}'", pieces[3]);
 			return;
 		}
+		const auto inner = value_field.substr(10, value_field.size() - 11);
+		const auto comma = inner.find(',');
+		if (comma == std::string_view::npos)
+		{
+			PATCH_ERROR("Invalid randfloat syntax '{}', expected randfloat(lo,hi) with decimal bounds", value_field);
+			return;
+		}
+		auto lo_sv = inner.substr(0, comma);
+		auto hi_sv = inner.substr(comma + 1);
+		while (!lo_sv.empty() && (lo_sv.front() == ' ' || lo_sv.front() == '\t'))
+			lo_sv.remove_prefix(1);
+		while (!lo_sv.empty() && (lo_sv.back() == ' ' || lo_sv.back() == '\t'))
+			lo_sv.remove_suffix(1);
+		while (!hi_sv.empty() && (hi_sv.front() == ' ' || hi_sv.front() == '\t'))
+			hi_sv.remove_prefix(1);
+		while (!hi_sv.empty() && (hi_sv.back() == ' ' || hi_sv.back() == '\t'))
+			hi_sv.remove_suffix(1);
+		std::string_view fend;
+		const auto lo_f = StringUtil::FromChars<float>(lo_sv, &fend);
+		if (!lo_f.has_value() || !fend.empty())
+		{
+			PATCH_ERROR("Invalid randfloat lower bound in '{}'", value_field);
+			return;
+		}
+		const auto hi_f = StringUtil::FromChars<float>(hi_sv, &fend);
+		if (!hi_f.has_value() || !fend.empty())
+		{
+			PATCH_ERROR("Invalid randfloat upper bound in '{}'", value_field);
+			return;
+		}
+		float flo = lo_f.value();
+		float fhi = hi_f.value();
+		is_rand_float = true;
+		rand_float_lo = flo;
+		rand_float_hi = fhi;
+		if (rand_float_lo > rand_float_hi)
+			std::swap(rand_float_lo, rand_float_hi);
+		data = 0;
+	}
+	else
+	{
+		ptr_data_expr = ParsePointerExpr(value_field);
+	}
 
-		data = bytes->size();
-		data_ptr = static_cast<u8*>(std::malloc(bytes->size()));
-		std::memcpy(data_ptr, bytes->data(), bytes->size());
+	if (!is_random && !is_rand_float && !ptr_data_expr)
+	{
+		if (type.value() == FLOAT_T)
+		{
+			std::string_view float_end;
+			const auto fval = StringUtil::FromChars<float>(value_field, &float_end);
+			if (!fval.has_value() || !float_end.empty())
+			{
+				PATCH_ERROR("Malformed float value '{}', a decimal number (e.g. 1.5) is expected", value_field);
+				return;
+			}
+			float f = fval.value();
+			u32 bits;
+			std::memcpy(&bits, &f, sizeof(bits));
+			data = bits;
+		}
+		else if (type.value() != BYTES_T)
+		{
+			// 支持负十六进制：-1 → 0xFFFF...FF
+			std::string_view data_str = value_field;
+			bool is_negative = false;
+			if (!data_str.empty() && data_str[0] == '-')
+			{
+				is_negative = true;
+				data_str = data_str.substr(1);
+			}
+
+			std::string_view data_end;
+			data = StringUtil::FromChars<u64>(data_str, 16, &data_end);
+			if (!data.has_value() || !data_end.empty())
+			{
+				PATCH_ERROR("Malformed data '{}', a hex number without prefix (e.g. 0123ABCD or -1) is expected", value_field);
+				return;
+			}
+			if (is_negative)
+				data = static_cast<u64>(-static_cast<s64>(data.value()));
+		}
+		else
+		{
+			std::optional<std::vector<u8>> bytes = StringUtil::DecodeHex(value_field);
+			if (!bytes.has_value() || bytes->empty())
+			{
+				PATCH_ERROR("Malformed data '{}', a hex string without prefix (e.g. 0123ABCD) is expected", value_field);
+				return;
+			}
+			data = bytes->size();
+			data_ptr = static_cast<u8*>(std::malloc(bytes->size()));
+			std::memcpy(data_ptr, bytes->data(), bytes->size());
+		}
+	}
+	else if (!is_random && !is_rand_float)
+	{
+		// 指针表达式作为数据槽 — 占位 0，apply 时再解析
+		data = 0;
 	}
 
 	PatchCommand iPatch;
 	iPatch.placetopatch = placetopatch.value();
 	iPatch.cpu = cpu.value();
-	iPatch.addr = addr.value();
+	iPatch.addr = addr_val;
 	iPatch.type = type.value();
 	iPatch.data = data.value();
 	iPatch.data_ptr = data_ptr;
+	iPatch.ptr_addr = ptr_addr_expr.release();
+	iPatch.ptr_data = ptr_data_expr.release();
+	iPatch.is_random = is_random;
+	iPatch.rand_lo = rand_lo;
+	iPatch.rand_hi = rand_hi;
+	iPatch.is_rand_float = is_rand_float;
+	iPatch.rand_float_lo = rand_float_lo;
+	iPatch.rand_float_hi = rand_float_hi;
 	group->patches.push_back(std::move(iPatch));
 
 #undef PATCH_ERROR
@@ -1139,6 +1705,53 @@ void Patch::ApplyVsyncPatches()
 	IOPMemoryInterface iop;
 	ApplyPatches(s_active_patches, PPT_CONTINUOUSLY, ee, iop);
 	ApplyPatches(s_active_patches, PPT_COMBINED_0_1, ee, iop);
+
+	// PC 全量移植 §12.2：在每帧补丁应用之后，统一推进 F-gate 状态机。
+	ApplyFGateUpdates();
+}
+
+// PC 全量移植 §12.2：F-gate 每帧推进 / 守门打开时调度被守护补丁
+void Patch::ApplyFGateUpdates()
+{
+	if (FGate::s_fgate_blocks.empty())
+		return;
+
+	EEMemoryInterface ee;
+	IOPMemoryInterface iop;
+	ExtendedState gated_state;
+	for (auto& block : FGate::s_fgate_blocks)
+	{
+		if (!block.valid || !block.has_guarded)
+			continue;
+
+		FGate::UpdateSlotStreak(block.open_slot, ee);
+		if (!block.open_slot.latched && block.open_slot.streak >= block.open_slot.hold_frames &&
+			block.open_slot.hold_frames > 0)
+		{
+			block.open_slot.latched = true;
+			block.close_slot.streak = 0;
+		}
+
+		FGate::UpdateSlotStreak(block.close_slot, ee);
+		if (block.open_slot.latched && block.close_slot.streak >= block.close_slot.hold_frames &&
+			block.close_slot.hold_frames > 0)
+		{
+			block.open_slot.latched = false;
+			block.open_slot.streak = 0;
+		}
+
+		if (block.open_slot.latched)
+		{
+			// 守护行是独立补丁，不应受 D/E 残留 SkipCount/PrevCheatType 影响
+			gated_state = {};
+			ApplyPatch(&block.guarded_cmd, ee, iop, gated_state);
+		}
+	}
+}
+
+void Patch::ResetFGateState()
+{
+	FGate::Reset();
 }
 
 void Patch::ApplyPatches(
@@ -1250,12 +1863,7 @@ template <typename Memory>
 	requires std::is_base_of_v<MemoryInterface, Memory>
 void Patch::handle_extended_t(const PatchCommand* p, Memory& memory, ExtendedState& state)
 {
-	if (state.skip_count > 0)
-	{
-		state.skip_count--;
-	}
-	else
-		switch (state.prev_cheat_type)
+	switch (state.prev_cheat_type)
 		{
 			case 0x3040: // vvvvvvvv 00000000 Inc
 			{
@@ -1727,6 +2335,48 @@ void Patch::handle_extended_t(const PatchCommand* p, Memory& memory, ExtendedSta
 						}
 					}
 				}
+				else if ((p->addr & 0xF0000000) == 0xF0000000)
+				{
+					// ── §12.2: F-gate accumulation ─────────────────────────
+					// 把 F-block 的前两行（open / close 条件）累加到 state.fgate_accum_block。
+					// 第三行（被守护的补丁）由 ApplyPatch 的入口在解析指针链 *之前* 捕获，
+					// 这样才能保留原始的 ptr_addr/ptr_data，让守门打开时能完整执行。
+					const u32 f_watch_addr = (u32)p->addr & 0x0FFFFFFF;
+					const std::string config_str = fmt::format("{:X}", (u64)p->data);
+
+					// Format A 需要 8 位 hex；不足则补前导 0
+					std::string padded_config;
+					if (config_str.size() < 8 && config_str.find('(') == std::string::npos)
+						padded_config = std::string(8 - config_str.size(), '0') + config_str;
+					else
+						padded_config = config_str;
+
+					if (state.fgate_accum_phase == 0)
+					{
+						state.fgate_accum_block = std::make_unique<FGate::Block>();
+						state.fgate_accum_block->open_slot.watch_addr = f_watch_addr;
+						if (FGate::ParseConfig(padded_config, state.fgate_accum_block->open_slot))
+							state.fgate_accum_phase = 1;
+						else
+						{
+							state.fgate_accum_block.reset();
+							state.fgate_accum_phase = 0;
+						}
+					}
+					else if (state.fgate_accum_phase == 1)
+					{
+						state.fgate_accum_block->close_slot.watch_addr = f_watch_addr;
+						if (FGate::ParseConfig(padded_config, state.fgate_accum_block->close_slot))
+							state.fgate_accum_phase = 2;
+						else
+						{
+							state.fgate_accum_block.reset();
+							state.fgate_accum_phase = 0;
+						}
+					}
+
+					state.prev_cheat_type = 0;
+				}
 		}
 }
 
@@ -1735,59 +2385,209 @@ template <typename EEMemory, typename IOPMemory>
              std::is_base_of_v<MemoryInterface, IOPMemory>
 void Patch::ApplyPatch(const PatchCommand* p, EEMemory& ee, IOPMemory& iop, ExtendedState& state)
 {
-	switch (p->cpu)
+	// §12.2：F-gate 第三行捕获。必须在指针链解析 *之前*，否则 ptr_addr/ptr_data 会丢。
+	if (state.fgate_accum_phase == 2 && p->type == EXTENDED_T)
+	{
+		// 真正的 0xFXXXXXXX 仍然是 F-code，不能当作守护行；只有非 F-code 的 EXTENDED_T 行
+		// 才视为 guarded。带指针链的地址（addr 是占位 0）也认为不是 F-code。
+		bool is_f_code = false;
+		if (!p->ptr_addr)
+			is_f_code = (p->addr & 0xF0000000) == 0xF0000000;
+
+		if (!is_f_code && state.fgate_accum_block)
+		{
+			const u64 dedup_key = FGate::MakeBlockKey(
+				state.fgate_accum_block->open_slot.watch_addr,
+				state.fgate_accum_block->close_slot.watch_addr);
+
+			if (FGate::s_fgate_registered_keys.count(dedup_key) == 0)
+			{
+				FGate::Block& blk = *state.fgate_accum_block;
+				// 深拷贝 PatchCommand POD 字段（不接管 data_ptr / ptr_*）
+				std::memcpy(static_cast<void*>(&blk.guarded_cmd), p, sizeof(PatchCommand));
+				blk.guarded_cmd.data_ptr = nullptr;
+				blk.guarded_cmd.ptr_addr = nullptr;
+				blk.guarded_cmd.ptr_data = nullptr;
+				if (p->ptr_addr)
+					blk.guarded_cmd.ptr_addr = new PointerChainExpr(*p->ptr_addr);
+				if (p->ptr_data)
+					blk.guarded_cmd.ptr_data = new PointerChainExpr(*p->ptr_data);
+				blk.has_guarded = true;
+				blk.valid = true;
+				FGate::s_fgate_blocks.push_back(std::move(blk));
+				FGate::s_fgate_registered_keys.insert(dedup_key);
+			}
+			state.fgate_accum_block.reset();
+			state.fgate_accum_phase = 0;
+			// 守护行不当帧应用，等 gate 打开时由 ApplyFGateUpdates 调度
+			return;
+		}
+	}
+
+	// D/E-code 的 SkipCount 在指针链解析 *之前* 统一消耗，避免提前 return（指针链失败）
+	// 让 SkipCount 残留泄露到下一行。
+	if (state.skip_count > 0)
+	{
+		state.skip_count--;
+		return;
+	}
+
+	// ── 解析指针链（地址 / 值） + randint ────────────────────────────────
+	u32 effective_addr = p->addr;
+	u64 effective_data = p->data;
+
+	MemoryInterface& chain_mem = (p->cpu == CPU_IOP) ? static_cast<MemoryInterface&>(iop)
+	                                                : static_cast<MemoryInterface&>(ee);
+
+	if (p->ptr_addr)
+	{
+		const auto resolved = ResolvePointerChain(*p->ptr_addr, chain_mem);
+		if (!resolved.has_value())
+			return;
+		effective_addr = resolved.value();
+	}
+	if (p->ptr_data)
+	{
+		if (p->ptr_data->is_value_chain)
+		{
+			effective_data = ResolveValuePointerChain(*p->ptr_data, chain_mem);
+		}
+		else
+		{
+			const auto resolved = ResolvePointerChain(*p->ptr_data, chain_mem);
+			if (!resolved.has_value())
+				return;
+			effective_data = resolved.value();
+		}
+	}
+
+	if (p->is_rand_float || p->is_random)
+	{
+		static thread_local std::mt19937_64 s_rng(std::random_device{}());
+		if (p->is_rand_float)
+		{
+			int lo_t = static_cast<int>(std::lround(static_cast<double>(p->rand_float_lo) * 10.0));
+			int hi_t = static_cast<int>(std::lround(static_cast<double>(p->rand_float_hi) * 10.0));
+			if (lo_t > hi_t)
+				std::swap(lo_t, hi_t);
+			std::uniform_int_distribution<int> distf(lo_t, hi_t);
+			const float f = static_cast<float>(distf(s_rng)) * 0.1f;
+			u32 bits;
+			std::memcpy(&bits, &f, sizeof(bits));
+			effective_data = bits;
+		}
+		else
+		{
+			std::uniform_int_distribution<u64> dist(p->rand_lo, p->rand_hi);
+			effective_data = dist(s_rng);
+		}
+	}
+
+	// 若任一字段被替换过，构造一个临时 PatchCommand 再分发；data_ptr 是借用，临时拷贝
+	// 不能在销毁时释放它（PatchCommand 析构会 free）。所以构造后必须把 data_ptr 设为
+	// nullptr 再让其析构。
+	PatchCommand resolved_cmd;
+	const PatchCommand* pp = p;
+	if (p->ptr_addr || p->ptr_data || p->is_random || p->is_rand_float)
+	{
+		resolved_cmd.placetopatch = p->placetopatch;
+		resolved_cmd.cpu = p->cpu;
+		resolved_cmd.type = p->type;
+		resolved_cmd.addr = effective_addr;
+		resolved_cmd.data = effective_data;
+		resolved_cmd.data_ptr = p->data_ptr; // 借用，析构前置 nullptr
+		resolved_cmd.ptr_addr = nullptr;
+		resolved_cmd.ptr_data = nullptr;
+		pp = &resolved_cmd;
+	}
+
+	switch (pp->cpu)
 	{
 		case CPU_EE:
 		{
-			switch (p->type)
+			switch (pp->type)
 			{
 				case BYTE_T:
 				{
-					ee.IdempotentWrite8(p->addr, static_cast<u8>(p->data));
+					ee.IdempotentWrite8(pp->addr, static_cast<u8>(pp->data));
 					break;
 				}
 				case SHORT_T:
 				{
-					ee.IdempotentWrite16(p->addr, static_cast<u16>(p->data));
+					ee.IdempotentWrite16(pp->addr, static_cast<u16>(pp->data));
 					break;
 				}
 				case WORD_T:
+				case FLOAT_T: // PC 全量移植：float 字面量在解析阶段已转 32-bit IEEE-754 hex
 				{
-					ee.IdempotentWrite32(p->addr, static_cast<u32>(p->data));
+					ee.IdempotentWrite32(pp->addr, static_cast<u32>(pp->data));
 					break;
 				}
 				case DOUBLE_T:
 				{
-					ee.IdempotentWrite64(p->addr, p->data);
+					ee.IdempotentWrite64(pp->addr, pp->data);
 					break;
 				}
 				case EXTENDED_T:
 				{
-					handle_extended_t(p, ee, state);
+					handle_extended_t(pp, ee, state);
 					break;
 				}
 				case SHORT_BE_T:
 				{
-					u16 value = ByteSwap(static_cast<u16>(p->data));
-					ee.IdempotentWrite16(p->addr, value);
+					u16 value = ByteSwap(static_cast<u16>(pp->data));
+					ee.IdempotentWrite16(pp->addr, value);
 					break;
 				}
 				case WORD_BE_T:
 				{
-					u32 value = ByteSwap(static_cast<u32>(p->data));
-					ee.IdempotentWrite32(p->addr, value);
+					u32 value = ByteSwap(static_cast<u32>(pp->data));
+					ee.IdempotentWrite32(pp->addr, value);
 					break;
 				}
 				case DOUBLE_BE_T:
 				{
-					u64 value = ByteSwap(p->data);
-					ee.IdempotentWrite64(p->addr, value);
+					u64 value = ByteSwap(pp->data);
+					ee.IdempotentWrite64(pp->addr, value);
 					break;
 				}
 				case BYTES_T:
 				{
-					// We compare before writing so the rec doesn't get upset and invalidate when there's no change.
-					ee.IdempotentWriteBytes(p->addr, p->data_ptr, static_cast<u32>(p->data));
+					ee.IdempotentWriteBytes(pp->addr, pp->data_ptr, static_cast<u32>(pp->data));
+					break;
+				}
+				case SWAP_T:
+				{
+					// PC 全量移植：交换两地址处的 32 位值。addr=A，data=B（均已被指针链解析）。
+					// 在 0x4000（4-code 循环）下还要按迭代步进同时对两侧偏移做交换。
+					const u32 addr_a = pp->addr;
+					const u32 addr_b = static_cast<u32>(pp->data);
+					if (state.prev_cheat_type == 0x4000)
+					{
+						for (u32 i = 0; i < state.iteration_count; i++)
+						{
+							const u32 a = addr_a + (i * state.iteration_increment);
+							const u32 b = addr_b + (i * state.iteration_increment);
+							const u32 va = ee.Read32(a);
+							const u32 vb = ee.Read32(b);
+							if (va != vb)
+							{
+								ee.Write32(a, vb);
+								ee.Write32(b, va);
+							}
+						}
+						state.prev_cheat_type = 0;
+					}
+					else
+					{
+						const u32 va = ee.Read32(addr_a);
+						const u32 vb = ee.Read32(addr_b);
+						if (va != vb)
+						{
+							ee.Write32(addr_a, vb);
+							ee.Write32(addr_b, va);
+						}
+					}
 					break;
 				}
 				default:
@@ -1799,26 +2599,59 @@ void Patch::ApplyPatch(const PatchCommand* p, EEMemory& ee, IOPMemory& iop, Exte
 		}
 		case CPU_IOP:
 		{
-			switch (p->type)
+			switch (pp->type)
 			{
 				case BYTE_T:
 				{
-					iop.IdempotentWrite(p->addr, static_cast<u8>(p->data));
+					iop.IdempotentWrite8(pp->addr, static_cast<u8>(pp->data));
 					break;
 				}
 				case SHORT_T:
 				{
-					iop.IdempotentWrite16(p->addr, static_cast<u16>(p->data));
+					iop.IdempotentWrite16(pp->addr, static_cast<u16>(pp->data));
 					break;
 				}
 				case WORD_T:
+				case FLOAT_T:
 				{
-					iop.IdempotentWrite32(p->addr, static_cast<u32>(p->data));
+					iop.IdempotentWrite32(pp->addr, static_cast<u32>(pp->data));
 					break;
 				}
 				case BYTES_T:
 				{
-					iop.IdempotentWriteBytes(p->addr, p->data_ptr, static_cast<u32>(p->data));
+					iop.IdempotentWriteBytes(pp->addr, pp->data_ptr, static_cast<u32>(pp->data));
+					break;
+				}
+				case SWAP_T:
+				{
+					const u32 addr_a = pp->addr;
+					const u32 addr_b = static_cast<u32>(pp->data);
+					if (state.prev_cheat_type == 0x4000)
+					{
+						for (u32 i = 0; i < state.iteration_count; i++)
+						{
+							const u32 a = addr_a + (i * state.iteration_increment);
+							const u32 b = addr_b + (i * state.iteration_increment);
+							const u32 va = iop.Read32(a);
+							const u32 vb = iop.Read32(b);
+							if (va != vb)
+							{
+								iop.Write32(a, vb);
+								iop.Write32(b, va);
+							}
+						}
+						state.prev_cheat_type = 0;
+					}
+					else
+					{
+						const u32 va = iop.Read32(addr_a);
+						const u32 vb = iop.Read32(addr_b);
+						if (va != vb)
+						{
+							iop.Write32(addr_a, vb);
+							iop.Write32(addr_b, va);
+						}
+					}
 					break;
 				}
 				default:
@@ -1833,6 +2666,10 @@ void Patch::ApplyPatch(const PatchCommand* p, EEMemory& ee, IOPMemory& iop, Exte
 			break;
 		}
 	}
+
+	// resolved_cmd 借用了 p->data_ptr，析构前置 nullptr，避免 ~PatchCommand 调用 free
+	if (pp == &resolved_cmd)
+		resolved_cmd.data_ptr = nullptr;
 }
 
 void Patch::ApplyDynaPatch(const DynamicPatch& patch, u32 address)

@@ -38,6 +38,8 @@
 #define TEXTURE_FILENAME_OLD_REGION_CLUT_FORMAT_STRING "%" PRIx64 "-%" PRIx64 "-r%" PRIx64 "-%08x"
 #define TEXTURE_REPLACEMENT_SUBDIRECTORY_NAME "replacements"
 #define TEXTURE_DUMP_SUBDIRECTORY_NAME "dumps"
+// §12.3: 二段式命名 {CLUTHash}-{CRC}.png/.dds —— 解析阶段会落到 TEXTURE_FILENAME_FORMAT_STRING
+// 形态（TEX0Hash=A, CLUTHash=0, bits=B），加载时把 A 重新解读为 CLUTHash，B 为 CRC。
 
 namespace
 {
@@ -142,6 +144,27 @@ namespace GSTextureReplacements
 	/// List of textures that we have asynchronously loaded and can now be injected back into the TC.
 	/// Second element is whether the texture should be created with mipmaps.
 	static std::vector<std::pair<TextureName, bool>> s_async_loaded_textures;
+
+	// §12.3: 二段式 (CLUTHash, CRC) → (TextureName, filename) 的兜底查找表。
+	// 当玩家放置的文件名是 "{CLUTHash}-{CRC}.png/.dds"（不含 TEX0Hash）时，
+	// 三段式精确匹配会 miss，但只要 GS 请求的 CLUTHash 与 CRC（即 TextureName::bits）
+	// 与文件命名一致，就可以通过本表命中并加载。
+	struct ClutCrcKey
+	{
+		u64 clutHash;
+		u32 crc;
+		bool operator==(const ClutCrcKey& other) const { return clutHash == other.clutHash && crc == other.crc; }
+	};
+	struct ClutCrcKeyHash
+	{
+		size_t operator()(const ClutCrcKey& k) const
+		{
+			size_t h = std::hash<u64>{}(k.clutHash);
+			HashCombine(h, static_cast<u64>(k.crc));
+			return h;
+		}
+	};
+	static std::unordered_map<ClutCrcKey, std::pair<TextureName, std::string>, ClutCrcKeyHash> s_clut_crc_replacements;
 
 	/// Loader/dumper thread.
 	static std::thread s_worker_thread;
@@ -386,6 +409,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 		s_replacement_texture_cache.clear();
 		s_pending_async_load_textures.clear();
 		s_async_loaded_textures.clear();
+		s_clut_crc_replacements.clear(); // §12.3
 	}
 
 	// can't replace bios textures.
@@ -430,6 +454,16 @@ void GSTextureReplacements::ReloadReplacementMap()
 			continue;
 
 		DbgCon.WriteLn("Found %ux%u replacement '%.*s'", name->Width(), name->Height(), static_cast<int>(filename.size()), filename.data());
+
+		// §12.3：玩家把文件命名为 "{CLUTHash}-{CRC}.png" 时，ParseReplacementName 会把它解析为
+		// 二段式（TEX0Hash=A, CLUTHash=0, bits=B, region 全 0）。这里复读一遍：把 A 当作 CLUTHash，
+		// B 当作 CRC，注册到 (CLUT, CRC) 兜底表里，使得即便 GS 实际请求时 TEX0Hash 不一致也能命中。
+		if (name->CLUTHash == 0 && name->TEX0Hash != 0 && !name->HasRegion())
+		{
+			ClutCrcKey cckey{name->TEX0Hash, name->bits};
+			s_clut_crc_replacements.emplace(cckey, std::make_pair(name.value(), fd.FileName));
+		}
+
 		s_replacement_texture_filenames.emplace(name.value(), std::move(fd.FileName));
 
 		// zero out the CLUT hash, because we need this for checking if there's any replacements with this hash when using paltex
@@ -511,7 +545,46 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	// replacement for this name exists?
 	auto fnit = s_replacement_texture_filenames.find(name);
 	if (fnit == s_replacement_texture_filenames.end())
+	{
+		// §12.3：三段式精确匹配 miss 时尝试二段式 (CLUTHash, CRC) 兜底。
+		// 仅在游戏请求带 CLUT（CLUTHash != 0）时才有意义；二段式文件不携带 region，
+		// 所以这里只匹配无 region 的纹理请求即可（注：name 是从 hash 构造的，hash 自带 region）。
+		if (!s_clut_crc_replacements.empty() && hash.CLUTHash != 0)
+		{
+			ClutCrcKey cckey{hash.CLUTHash, name.bits};
+			auto ccit = s_clut_crc_replacements.find(cckey);
+			if (ccit != s_clut_crc_replacements.end())
+			{
+				DevCon.WriteLn("(Texture) §12.3 CLUT+CRC fallback hit: TEX0=%016" PRIx64 " CLUT=%016" PRIx64 " CRC=%08x",
+					hash.TEX0Hash, hash.CLUTHash, name.bits);
+
+				const TextureName& cc_name = ccit->second.first;
+				const std::string& cc_filename = ccit->second.second;
+
+				// 命中 cache 直接复用
+				{
+					std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+					auto cache_it = s_replacement_texture_cache.find(cc_name);
+					if (cache_it != s_replacement_texture_cache.end())
+					{
+						*alpha_minmax = cache_it->second.alpha_minmax;
+						return CreateReplacementTexture(cache_it->second, mipmap);
+					}
+				}
+
+				// 未缓存：同步加载（CLUT-only fallback 路径不走 async，保持简单可控）
+				std::optional<ReplacementTexture> replacement(LoadReplacementTexture(cc_name, cc_filename, !mipmap));
+				if (replacement.has_value())
+				{
+					std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+					const ReplacementTexture& rtex = s_replacement_texture_cache.emplace(cc_name, std::move(replacement.value())).first->second;
+					*alpha_minmax = rtex.alpha_minmax;
+					return CreateReplacementTexture(rtex, mipmap);
+				}
+			}
+		}
 		return nullptr;
+	}
 
 	// try the full cache first, to avoid reloading from disk
 	{
@@ -725,6 +798,7 @@ void GSTextureReplacements::ClearReplacementTextures()
 	s_replacement_texture_cache.clear();
 	s_pending_async_load_textures.clear();
 	s_async_loaded_textures.clear();
+	s_clut_crc_replacements.clear(); // §12.3
 }
 
 GSTexture* GSTextureReplacements::CreateReplacementTexture(const ReplacementTexture& rtex, bool mipmap)

@@ -9,6 +9,15 @@ Official website: https://emucorex.web.app/
 
 ![Status](https://img.shields.io/badge/Status-Early%20Development%20%2F%20Unstable-red)
 
+## 近期更新 · Recent updates
+
+本仓库在持续迭代中，**近期重点包括**：
+
+- **联机（Netplay / LAN）**：面向多人同步与局域网联机场景的核心与桥接工作（含 Android 端相关 UI 与 `Netplay` 模块），在兼容性与网络稳定性上仍在完善。
+- **ReShade 风格着色器**：在 Vulkan 渲染路径中集成 ReShadeFX / 相关着色与预设管线（见 `ReShade` 与 `reshadefx` 等目录及游戏内 ReShade 面板），用于后处理与画质增强；具体效果因设备、驱动与游戏而异。
+
+*English: This tree emphasizes **netplay/online-oriented integration** and **ReShade-style post-processing** on the Vulkan path; both areas are under active development.*
+
 > [!WARNING]
 > EmuCoreX is currently in the early stages of development. Expect instability, visual issues, performance drops, random slowdowns, and occasional crashes depending on the game, device, renderer, and driver stack.
 >
@@ -28,6 +37,8 @@ Official website: https://emucorex.web.app/
 
 ## Highlights
 
+- **Netplay / 联机**：联机与局域网联机相关能力在持续合入与打磨（以当前分支中的 `Netplay` 与 Android 联机 UI 为准）。
+- **ReShade-style shaders / 着色器增强**：Vulkan 侧 ReShade 风格后处理与预设管理，便于画质调节与效果实验。
 - PCSX2-based emulation core adapted by EmuCoreX for Android
 - Home screen with cover art, game metadata, recent games, and search
 - BIOS and game folder setup, with recovery when folders become invalid

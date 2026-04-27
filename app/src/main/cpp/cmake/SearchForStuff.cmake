@@ -128,6 +128,11 @@ endif()
 
 if(USE_VULKAN)
 	add_subdirectory(3rdparty/vulkan EXCLUDE_FROM_ALL)
+	# ReShade FX language frontend + SPIR-V backend (vendored from
+	# D:/PS2/reshade-main/source). Used by the Vulkan renderer to compile *.fx
+	# preset effects to SPIR-V at runtime. Must be added after 3rdparty/glslang
+	# only logically (we rely on glslang's vendored SPIR-V headers).
+	add_subdirectory(3rdparty/reshadefx EXCLUDE_FROM_ALL)
 endif()
 
 add_subdirectory(3rdparty/cubeb EXCLUDE_FROM_ALL)

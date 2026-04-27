@@ -3,6 +3,7 @@
 
 #include "platform/host/Host.h"
 #include "Input/InputManager.h"
+#include "NetplayHook.h"
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadDualshock2.h"
 #include "SIO/Pad/PadGuitar.h"
@@ -26,6 +27,7 @@
 
 #include "fmt/format.h"
 
+#include <algorithm>
 #include <vector>
 
 //Map of actively pressed keys so that chords work
@@ -543,10 +545,51 @@ PadBase* Pad::GetPad(const u8 unifiedSlot)
 	return s_controllers[unifiedSlot].get();
 }
 
+namespace
+{
+	thread_local bool tl_netplay_redirect_bypass = false;
+} // namespace
+
+Pad::NetplayRedirectBypass::NetplayRedirectBypass()
+{
+	tl_netplay_redirect_bypass = true;
+}
+
+Pad::NetplayRedirectBypass::~NetplayRedirectBypass()
+{
+	tl_netplay_redirect_bypass = false;
+}
+
 void Pad::SetControllerState(u32 controller, u32 bind, float value)
 {
 	if (controller >= NUM_CONTROLLER_PORTS)
 		return;
+
+	if (!tl_netplay_redirect_bypass && NetplayHook::IsPadOverrideActive())
+	{
+		if (const auto ex = NetplayHook::GetLanExclusiveLocalPadSlot())
+		{
+			if (controller != *ex)
+				return;
+		}
+
+		if (controller <= 1u && bind < static_cast<u32>(NetplayHook::MAX_PAD_INPUTS))
+		{
+			u8 raw;
+			if (PadDualshock2::IsAnalogKey(static_cast<int>(bind)))
+				raw = static_cast<u8>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
+			else
+				raw = (value > 0.0f) ? 0xFF : 0x00;
+			NetplayHook::SetPhysicalInput(bind, raw);
+		}
+		return;
+	}
+
+	if (NetplayHook::IsActive() && controller <= 1u &&
+		s_controllers[controller]->GetType() == ControllerType::NotConnected)
+	{
+		CreatePad(static_cast<u8>(controller), ControllerType::DualShock2);
+	}
 
 	s_controllers[controller]->Set(bind, value);
 }

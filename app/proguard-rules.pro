@@ -9,6 +9,7 @@
 }
 
 -keep class com.sbro.emucorex.core.NativeApp { *; }
+-keep class com.sbro.emucorex.netplay.** { *; }
 -keep class com.sbro.emucorex.core.utils.RetroAchievementsBridge { *; }
 -keep class com.sbro.emucorex.core.utils.DiscordBridge { *; }
 -keep class com.sbro.emucorex.core.utils.SDLControllerManager { *; }

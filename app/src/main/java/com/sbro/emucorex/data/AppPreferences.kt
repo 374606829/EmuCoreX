@@ -253,6 +253,9 @@ class AppPreferences(private val context: Context) {
         private val ENABLE_MTVU = booleanPreferencesKey("enable_mtvu")
         private val ENABLE_FAST_CDVD = booleanPreferencesKey("enable_fast_cdvd")
         private val ENABLE_CHEATS = booleanPreferencesKey("enable_cheats")
+        private val LOAD_TEXTURE_REPLACEMENTS = booleanPreferencesKey("load_texture_replacements")
+        private val DUMP_REPLACEABLE_TEXTURES = booleanPreferencesKey("dump_replaceable_textures")
+        private val TEXTURE_ROOT_PATH = stringPreferencesKey("texture_root_path")
         private val HW_DOWNLOAD_MODE = intPreferencesKey("hw_download_mode")
         private val FRAME_SKIP = intPreferencesKey("frame_skip")
         private val SKIP_DUPLICATE_FRAMES = booleanPreferencesKey("skip_duplicate_frames")
@@ -530,6 +533,32 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
         context.dataStore.edit { it[ONBOARDING_COMPLETED] = completed }
+    }
+
+    val loadTextureReplacements: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[LOAD_TEXTURE_REPLACEMENTS] ?: false
+    }
+
+    suspend fun setLoadTextureReplacements(enabled: Boolean) {
+        context.dataStore.edit { it[LOAD_TEXTURE_REPLACEMENTS] = enabled }
+    }
+
+    val dumpReplaceableTextures: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[DUMP_REPLACEABLE_TEXTURES] ?: false
+    }
+
+    suspend fun setDumpReplaceableTextures(enabled: Boolean) {
+        context.dataStore.edit { it[DUMP_REPLACEABLE_TEXTURES] = enabled }
+    }
+
+    val textureRootPath: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[TEXTURE_ROOT_PATH]
+    }
+
+    suspend fun setTextureRootPath(path: String?) {
+        context.dataStore.edit { prefs ->
+            if (path.isNullOrBlank()) prefs.remove(TEXTURE_ROOT_PATH) else prefs[TEXTURE_ROOT_PATH] = path
+        }
     }
 
     val languageTag: Flow<String?> = context.dataStore.data.map { prefs ->
@@ -1872,6 +1901,9 @@ class AppPreferences(private val context: Context) {
             put("trilinearFiltering", prefs[TRILINEAR_FILTERING] ?: GsHackDefaults.TRILINEAR_FILTERING_DEFAULT)
             put("blendingAccuracy", prefs[BLENDING_ACCURACY] ?: GsHackDefaults.BLENDING_ACCURACY_DEFAULT)
             put("texturePreloading", prefs[TEXTURE_PRELOADING] ?: GsHackDefaults.TEXTURE_PRELOADING_DEFAULT)
+            put("loadTextureReplacements", prefs[LOAD_TEXTURE_REPLACEMENTS] ?: false)
+            put("dumpReplaceableTextures", prefs[DUMP_REPLACEABLE_TEXTURES] ?: false)
+            put("textureRootPath", prefs[TEXTURE_ROOT_PATH])
             put("enableFxaa", prefs[ENABLE_FXAA] ?: false)
             put("casMode", prefs[CAS_MODE] ?: 0)
             put("casSharpness", prefs[CAS_SHARPNESS] ?: 50)
@@ -1990,6 +2022,9 @@ class AppPreferences(private val context: Context) {
             prefs[TRILINEAR_FILTERING] = json.optInt("trilinearFiltering", GsHackDefaults.TRILINEAR_FILTERING_DEFAULT).coerceIn(0, 3)
             prefs[BLENDING_ACCURACY] = json.optInt("blendingAccuracy", GsHackDefaults.BLENDING_ACCURACY_DEFAULT).coerceIn(0, 5)
             prefs[TEXTURE_PRELOADING] = json.optInt("texturePreloading", GsHackDefaults.TEXTURE_PRELOADING_DEFAULT).coerceIn(0, 2)
+            prefs[LOAD_TEXTURE_REPLACEMENTS] = json.optBoolean("loadTextureReplacements", false)
+            prefs[DUMP_REPLACEABLE_TEXTURES] = json.optBoolean("dumpReplaceableTextures", false)
+            json.optString("textureRootPath").takeIf { it.isNotBlank() }?.let { prefs[TEXTURE_ROOT_PATH] = it } ?: prefs.remove(TEXTURE_ROOT_PATH)
             prefs[ENABLE_FXAA] = json.optBoolean("enableFxaa", false)
             prefs[CAS_MODE] = json.optInt("casMode", 0).coerceIn(0, 2)
             prefs[CAS_SHARPNESS] = json.optInt("casSharpness", 50).coerceIn(0, 100)

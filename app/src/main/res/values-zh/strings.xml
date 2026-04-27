@@ -971,4 +971,22 @@
     <string name="settings_language_hindi">印地语</string>
     <string name="settings_language_native_italian">Italiano</string>
     <string name="settings_language_native_hindi">हिन्दी</string>
+    <!-- ReShade 后处理 UI -->
+    <string name="reshade_tab">ReShade</string>
+    <string name="reshade_master_switch">启用 ReShade</string>
+    <string name="reshade_master_switch_help">后处理链总开关。修改将在下次启动模拟器时生效。</string>
+    <string name="reshade_master_on_toast">已启用 ReShade，重启游戏后生效。</string>
+    <string name="reshade_master_off_toast">已关闭 ReShade。</string>
+    <string name="reshade_pick_preset">读取 INI…</string>
+    <string name="reshade_no_preset">未加载预设</string>
+    <string name="reshade_no_presets_hint">请将 .ini 与 .fx 文件放入应用数据目录下的 shaders/reshade/。</string>
+    <string name="reshade_loading">正在加载预设…</string>
+    <string name="reshade_techniques">效果链</string>
+    <string name="reshade_no_techniques">该预设没有 Techniques 条目。</string>
+    <string name="reshade_save">保存</string>
+    <string name="reshade_revert">撤销修改</string>
+    <string name="reshade_save_toast">已保存预设。</string>
+    <string name="reshade_error_toast">保存预设失败。</string>
+    <string name="reshade_dirty">尚未保存</string>
+    <string name="reshade_clean">已全部保存</string>
 </resources>

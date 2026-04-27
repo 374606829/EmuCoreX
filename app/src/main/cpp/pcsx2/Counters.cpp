@@ -17,6 +17,7 @@
 #include "ps2/HwInternal.h"
 #include "SIO/Sio.h"
 #include "SPU2/spu2.h"
+#include "NetplayHook.h"
 #include "Recording/InputRecording.h"
 #include "VMManager.h"
 #include "VUmicro.h"
@@ -504,6 +505,15 @@ static __fi void VSyncStart(u64 sCycle)
 
 	// Poll input after MTGS frame push, just in case it has to stall to catch up.
 	VMManager::Internal::PollInputOnCPUThread();
+
+	// Netplay frame sync hook: collect local inputs, apply remote inputs, tick heartbeat.
+	// 必须放在 PollInputOnCPUThread 之后：FrameSync 依赖本帧已采集的物理输入。
+	if (auto netplayCb = NetplayHook::GetVSyncCallback())
+		netplayCb();
+
+	// LAN Boot Netplay: first-frame style notify (与 PC 端 pcsx2-online HandleIO 等价)。
+	if (auto lanCb = NetplayHook::GetLanBootVsyncCallback())
+		lanCb();
 
 	// Memcard auto ejection - Uses a tick system timed off of real time, decrementing one tick per frame.
 	AutoEject::CountDownTicks();

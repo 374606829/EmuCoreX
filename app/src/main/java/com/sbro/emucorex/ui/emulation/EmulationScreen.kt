@@ -52,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ExitToApp
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Gamepad
 import androidx.compose.material.icons.rounded.LockOpen
@@ -194,6 +195,7 @@ private enum class EmulationMenuTab {
     Emulation,
     Graphics,
     Fixes,
+    ReShade,
     Achievements
 }
 
@@ -2843,6 +2845,14 @@ private fun EmulationSidebarMenu(
                         )
                     }
 
+                    EmulationMenuTab.ReShade -> {
+                        ReShadePane(
+                            sectionTitleColor = sectionTitleColor,
+                            sectionLabelTopPadding = sectionLabelTopPadding,
+                            sectionLabelInset = sectionLabelInset
+                        )
+                    }
+
                     EmulationMenuTab.Achievements -> {
                         OverlayAchievementsPane(
                             gamePath = currentGamePath,
@@ -2902,6 +2912,12 @@ private fun EmulationSidebarMenu(
                     contentDescription = stringResource(R.string.settings_fixes_tab),
                     selected = selectedMenuTab == EmulationMenuTab.Fixes,
                     onClick = { selectedMenuTabName = EmulationMenuTab.Fixes.name }
+                )
+                EmulationMenuRailButton(
+                    icon = Icons.Rounded.AutoFixHigh,
+                    contentDescription = stringResource(R.string.reshade_tab),
+                    selected = selectedMenuTab == EmulationMenuTab.ReShade,
+                    onClick = { selectedMenuTabName = EmulationMenuTab.ReShade.name }
                 )
                 EmulationMenuRailButton(
                     icon = Icons.Rounded.LockOpen,

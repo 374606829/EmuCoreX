@@ -982,4 +982,22 @@
     <string name="save">Save</string>
     <string name="edit">Edit</string>
     <string name="delete">Delete</string>
+    <!-- ReShade post-processing UI -->
+    <string name="reshade_tab">ReShade</string>
+    <string name="reshade_master_switch">Enable ReShade</string>
+    <string name="reshade_master_switch_help">Master switch for the post-processing chain. Changes apply on the next emulator start.</string>
+    <string name="reshade_master_on_toast">ReShade enabled. Restart the game to apply.</string>
+    <string name="reshade_master_off_toast">ReShade disabled.</string>
+    <string name="reshade_pick_preset">Open INI…</string>
+    <string name="reshade_no_preset">No preset loaded</string>
+    <string name="reshade_no_presets_hint">Place your .ini and .fx files under shaders/reshade/ in the app data folder.</string>
+    <string name="reshade_loading">Loading preset…</string>
+    <string name="reshade_techniques">Effect chain</string>
+    <string name="reshade_no_techniques">This preset has no Techniques entries.</string>
+    <string name="reshade_save">Save</string>
+    <string name="reshade_revert">Revert</string>
+    <string name="reshade_save_toast">Preset saved.</string>
+    <string name="reshade_error_toast">Failed to save preset.</string>
+    <string name="reshade_dirty">Unsaved changes</string>
+    <string name="reshade_clean">All changes saved</string>
 </resources>

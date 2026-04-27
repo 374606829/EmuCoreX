@@ -22,6 +22,7 @@ import com.sbro.emucorex.data.MemoryCardRepository
 import com.sbro.emucorex.data.OverlayLayoutSnapshot
 import com.sbro.emucorex.data.PerGameSettings
 import com.sbro.emucorex.data.PerGameSettingsRepository
+import com.sbro.emucorex.netplay.LanNetplayNative
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -160,6 +161,9 @@ private data class EmulationLaunchConfig(
     val trilinearFiltering: Int,
     val blendingAccuracy: Int,
     val texturePreloading: Int,
+    val loadTextureReplacements: Boolean,
+    val dumpReplaceableTextures: Boolean,
+    val textureRootPath: String?,
     val enableFxaa: Boolean,
     val casMode: Int,
     val casSharpness: Int,
@@ -734,6 +738,9 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     trilinearFiltering = config.trilinearFiltering,
                     blendingAccuracy = config.blendingAccuracy,
                     texturePreloading = config.texturePreloading,
+                    loadTextureReplacements = config.loadTextureReplacements,
+                    dumpReplaceableTextures = config.dumpReplaceableTextures,
+                    textureRootPath = config.textureRootPath,
                     enableFxaa = config.enableFxaa,
                     casMode = config.casMode,
                     casSharpness = config.casSharpness,
@@ -987,6 +994,11 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     var waitFrames = 0
                     while (waitFrames < 60 && isActive) {
                         if (EmulatorBridge.hasValidVm()) {
+                            runCatching {
+                                if (LanNetplayNative.isEnabled()) {
+                                    LanNetplayNative.onVmStarted()
+                                }
+                            }
                             _uiState.value = _uiState.value.copy(statusMessage = "status_running")
                             delay(2000)
                             if (_uiState.value.statusMessage == "status_running") {
@@ -2165,6 +2177,9 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
             trilinearFiltering = preferences.trilinearFiltering.first(),
             blendingAccuracy = preferences.blendingAccuracy.first(),
             texturePreloading = preferences.texturePreloading.first(),
+            loadTextureReplacements = preferences.loadTextureReplacements.first(),
+            dumpReplaceableTextures = preferences.dumpReplaceableTextures.first(),
+            textureRootPath = preferences.textureRootPath.first(),
             enableFxaa = preferences.enableFxaa.first(),
             casMode = preferences.casMode.first(),
             casSharpness = preferences.casSharpness.first(),
@@ -2714,6 +2729,11 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                         waitTime += 50
                     }
                 } catch (_: Exception) { }
+                runCatching {
+                    if (LanNetplayNative.isEnabled()) {
+                        LanNetplayNative.onVmStopped()
+                    }
+                }
                 _uiState.value = _uiState.value.copy(
                     isRunning = false,
                     isStarting = false,

@@ -25,6 +25,11 @@
 
 class VKSwapChain;
 
+namespace ReShade
+{
+	class ChainVK;
+}
+
 class GSDeviceVK final : public GSDevice
 {
 public:
@@ -729,4 +734,13 @@ private:
 
 	// current pipeline selector - we save this in the struct to avoid re-zeroing it every draw
 	PipelineSelector m_pipeline_selector = {};
+
+	// ReShade-style post-processing chain. Owned by the device so its
+	// lifetime is tied to the Vulkan instance/device. Lazily initialized
+	// the first time BeginPresent observes a configured preset; on any
+	// failure it stays in passthrough mode and never crashes.
+	std::unique_ptr<ReShade::ChainVK> m_reshade_chain;
+	bool m_reshade_chain_init_attempted = false;
+
+	void EnsureReShadeChainInitialized();
 };

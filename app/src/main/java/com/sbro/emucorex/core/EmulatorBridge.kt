@@ -236,6 +236,9 @@ object EmulatorBridge {
         trilinearFiltering: Int = GsHackDefaults.TRILINEAR_FILTERING_DEFAULT,
         blendingAccuracy: Int = GsHackDefaults.BLENDING_ACCURACY_DEFAULT,
         texturePreloading: Int = GsHackDefaults.TEXTURE_PRELOADING_DEFAULT,
+        loadTextureReplacements: Boolean = false,
+        dumpReplaceableTextures: Boolean = false,
+        textureRootPath: String? = null,
         enableFxaa: Boolean = false,
         casMode: Int = 0,
         casSharpness: Int = 50,
@@ -294,6 +297,10 @@ object EmulatorBridge {
         val memcardsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "memcards").apply { mkdirs() }
         val cheatsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "cheats").apply { mkdirs() }
         val patchesDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "patches").apply { mkdirs() }
+        val texturesDir = textureRootPath
+            ?.takeIf { it.isNotBlank() && !it.startsWith("content://") }
+            ?.let { File(it).apply { mkdirs() } }
+            ?: EmulatorStorage.texturesDir(context)
         val logDir = EmulatorStorage.logDir(context)
         val manualHardwareFixes = GsHackDefaults.shouldEnableManualHardwareFixes(
             cpuSpriteRenderSize = cpuSpriteRenderSize,
@@ -341,6 +348,7 @@ object EmulatorBridge {
                 add(settingOp("Folders", "MemoryCards", "string", memcardsDir.absolutePath))
                 add(settingOp("Folders", "Cheats", "string", cheatsDir.absolutePath))
                 add(settingOp("Folders", "Patches", "string", patchesDir.absolutePath))
+                add(settingOp("Folders", "Textures", "string", texturesDir.absolutePath))
                 add(settingOp("Folders", "Logs", "string", logDir.absolutePath))
                 add(memoryCardSlotOp(1, memoryCardSlot1))
                 add(memoryCardSlotOp(2, memoryCardSlot2))
@@ -369,6 +377,8 @@ object EmulatorBridge {
                 add(settingOp("EmuCore/GS", "TriFilter", "int", trilinearFiltering.toString()))
                 add(settingOp("EmuCore/GS", "accurate_blending_unit", "int", blendingAccuracy.toString()))
                 add(settingOp("EmuCore/GS", "texture_preloading", "int", texturePreloading.toString()))
+                add(settingOp("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString()))
+                add(settingOp("EmuCore/GS", "DumpReplaceableTextures", "bool", dumpReplaceableTextures.toString()))
                 add(settingOp("EmuCore/GS", "DisableShaderCache", "bool", "false"))
                 add(settingOp("EmuCore/GS", "fxaa", "bool", enableFxaa.toString()))
                 add(settingOp("EmuCore/GS", "CASMode", "int", casMode.toString()))

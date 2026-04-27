@@ -173,6 +173,15 @@ set(pcsx2Sources
 	MMI.cpp
 	MTGS.cpp
 	MTVU.cpp
+	NetplayHook.cpp
+	Netplay/NetplayFileHash.cpp
+	Netplay/NetplayFrameSyncClient.cpp
+	Netplay/NetplayFrameSyncInputHooks.cpp
+	Netplay/NetplayLanAndroidController.cpp
+	Netplay/NetplayLanPlugin.cpp
+	Netplay/NetplayLanUdpRelay.cpp
+	Netplay/NetplayUdpSocket.cpp
+	Netplay/shoryu/zed_net.cpp
 	PrecompiledHeader.cpp
 	R3000A.cpp
 	R3000AInterpreter.cpp
@@ -230,6 +239,18 @@ set(pcsx2Headers
 	Mdec.h
 	MTGS.h
 	MTVU.h
+	NetplayHook.h
+	Netplay/NetplayFileHash.h
+	Netplay/NetplayFrameSyncClient.h
+	Netplay/NetplayFrameSyncInputHooks.h
+	Netplay/NetplayLanAndroidController.h
+	Netplay/NetplayLanEmulatorState.h
+	Netplay/NetplayLanMessage.h
+	Netplay/NetplayLanPlugin.h
+	Netplay/NetplayLanSettingsAndroid.h
+	Netplay/NetplayLanUdpRelay.h
+	Netplay/NetplayRoomStateAndroid.h
+	Netplay/NetplayUdpSocket.h
 	PrecompiledHeader.h
 	R3000A.h
 	R5900OpcodeTables.h
@@ -692,6 +713,9 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKShaderCache.cpp
 		GS/Renderers/Vulkan/VKStreamBuffer.cpp
 		GS/Renderers/Vulkan/VKSwapChain.cpp
+		GS/Renderers/Vulkan/ReShade/ReShadePresetINI.cpp
+		GS/Renderers/Vulkan/ReShade/ReShadeFXCompiler.cpp
+		GS/Renderers/Vulkan/ReShade/ReShadeChainVK.cpp
 	)
 	list(APPEND pcsx2GSHeaders
 		GS/Renderers/Vulkan/GSDeviceVK.h
@@ -703,6 +727,9 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKShaderCache.h
 		GS/Renderers/Vulkan/VKStreamBuffer.h
 		GS/Renderers/Vulkan/VKSwapChain.h
+		GS/Renderers/Vulkan/ReShade/ReShadePresetINI.h
+		GS/Renderers/Vulkan/ReShade/ReShadeFXCompiler.h
+		GS/Renderers/Vulkan/ReShade/ReShadeChainVK.h
 	)
 	if(ANDROID)
 		add_library(shaderc_static STATIC IMPORTED GLOBAL)
@@ -715,6 +742,9 @@ if(USE_VULKAN)
 		target_link_libraries(PCSX2_FLAGS INTERFACE vulkan-headers glslang)
 		target_include_directories(PCSX2_FLAGS INTERFACE ${SHADERC_INCLUDE_DIR})
 	endif()
+	# Bring in the vendored ReShade FX -> SPIR-V compiler. It is only
+	# needed by the Vulkan renderer, so the dependency is added here.
+	target_link_libraries(PCSX2_FLAGS INTERFACE reshadefx_static)
 endif()
 
 set(pcsx2GSMetalShaders
@@ -1195,6 +1225,7 @@ if(ANDROID)
 		CDVD/Linux/IOCtlSrc.cpp
 		${pcsx2LinuxHeaders}
 		platform/android_bridge/AndroidBridge.cpp
+		platform/android_bridge/AndroidLanBridge.cpp
 		../common/Android/JNI.cpp
 	)
 elseif(LINUX)

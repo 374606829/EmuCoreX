@@ -9,14 +9,17 @@
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
+#include "GS/Renderers/Vulkan/ReShade/ReShadeChainVK.h"
 #include "GS/Renderers/Common/GSDevice.h"
 
 #include "core/runtime/BuildVersion.h"
 #include "platform/host/Host.h"
 
+#include "Config.h"
 #include "common/Console.h"
 #include "common/BitUtils.h"
 #include "common/Error.h"
+#include "common/FileSystem.h"
 #include "common/HostSys.h"
 #include "common/Path.h"
 #include "common/ScopedGuard.h"
@@ -124,6 +127,63 @@ GSDeviceVK::GSDeviceVK()
 }
 
 GSDeviceVK::~GSDeviceVK() = default;
+
+void GSDeviceVK::EnsureReShadeChainInitialized()
+{
+	// First call after Create() builds the chain object; subsequent calls are no-ops unless the
+	// chain has been explicitly Reset(). We only attempt once per device lifetime - if loading
+	// the preset fails, the chain stays in passthrough and we don't burn cycles re-trying.
+	if (m_reshade_chain_init_attempted)
+		return;
+	m_reshade_chain_init_attempted = true;
+
+	// PCSX2 is compiled with `-fno-exceptions`, so we cannot wrap this in
+	// try/catch. ChainVK::LoadPreset is documented as non-throwing (it
+	// returns bool and folds compilation failures into the chain's internal
+	// "passthrough" state), so the failure path here is purely the bool
+	// return value. Should any STL allocation throw further down, the
+	// process will std::terminate - acceptable per MVP fail-loud policy.
+
+	m_reshade_chain = std::make_unique<ReShade::ChainVK>();
+
+	// MVP convention: presets live under <DataRoot>/shaders/reshade/.
+	// The default file name matches the verification asset called out in
+	// "最小MVP实施文档.md". Hosts that want a different preset can drop a
+	// file with the same name in the directory or extend this lookup.
+	const std::string reshade_dir = Path::Combine(EmuFolders::DataRoot, "shaders/reshade");
+	const std::string preset_path = Path::Combine(reshade_dir, "preset.ini");
+
+	ReShade::ChainConfig cfg;
+	if (FileSystem::FileExists(preset_path.c_str()))
+	{
+		cfg.preset_path = preset_path;
+	}
+	else
+	{
+		// Fall back to the literal name used by the verification asset.
+		const std::string alt = Path::Combine(reshade_dir, "1.\xe9\xbb\x98\xe8\xae\xa4\xc2\xb7\xe9\x80\x82\xe5\xba\x94\xe5\xa4\xa7\xe9\x83\xa8\xe5\x88\x86.ini");
+		if (FileSystem::FileExists(alt.c_str()))
+			cfg.preset_path = alt;
+	}
+
+	// Common ReShade shader header search root (`reshade-shaders/Shaders`)
+	// when present alongside the preset directory.
+	const std::string shared_shaders = Path::Combine(reshade_dir, "reshade-shaders/Shaders");
+	if (FileSystem::DirectoryExists(shared_shaders.c_str()))
+		cfg.extra_search_paths.push_back(shared_shaders);
+
+	if (cfg.preset_path.empty())
+	{
+		Console.WriteLn("[ReShade] No preset found under '%s', chain disabled this session", reshade_dir.c_str());
+		return;
+	}
+
+	const bool ok = m_reshade_chain->LoadPreset(this, cfg);
+	if (!ok)
+	{
+		Console.WriteLn("[ReShade] LoadPreset reported no runnable effects; chain stays in passthrough");
+	}
+}
 
 VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtensions* oe, bool enable_debug_utils,
 	bool enable_validation_layer)
@@ -2222,6 +2282,16 @@ void GSDeviceVK::Destroy()
 		WaitForGPUIdle();
 	}
 
+	// Tear the ReShade chain down before the device-owned Vulkan handles
+	// disappear so its DeferImageDestruction queue (when populated by future
+	// milestones) can still talk to a live device.
+	if (m_reshade_chain)
+	{
+		m_reshade_chain->Reset();
+		m_reshade_chain.reset();
+	}
+	m_reshade_chain_init_attempted = false;
+
 	m_swap_chain.reset();
 
 	DestroySpinResources();
@@ -2314,6 +2384,12 @@ void GSDeviceVK::ResizeWindow(u32 new_window_width, u32 new_window_height, float
 	}
 
 	m_window_info = m_swap_chain->GetWindowInfo();
+
+	if (m_reshade_chain)
+	{
+		m_reshade_chain->NotifyBackbufferResized(
+			static_cast<u32>(m_swap_chain->GetWidth()), static_cast<u32>(m_swap_chain->GetHeight()));
+	}
 }
 
 bool GSDeviceVK::SupportsExclusiveFullscreen() const
@@ -2456,6 +2532,24 @@ GSDevice::PresentResult GSDeviceVK::BeginPresent(bool frame_skip)
 	// Make sure they're ready now
 	if (!frame_skip && m_current)
 		static_cast<GSTextureVK*>(m_current)->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+
+	// Run the ReShade-style post-processing chain right before the swap-chain render pass starts.
+	// On entry m_current is in ShaderReadOnly; the chain may rewrite it to point at one of its own
+	// intermediate render targets (also in ShaderReadOnly when the chain returns), which the present
+	// pass picks up transparently. Any failure inside the chain is swallowed and the chain reverts
+	// to passthrough so the existing present path keeps working without crashes (per MVP fallback).
+	if (!frame_skip && m_current)
+	{
+		EnsureReShadeChainInitialized();
+		if (m_reshade_chain && m_reshade_chain->IsActive())
+		{
+			GSTextureVK* current_vk = static_cast<GSTextureVK*>(m_current);
+			m_reshade_chain->Apply(cmdbuffer, current_vk,
+				static_cast<u32>(swap_chain_texture->GetWidth()),
+				static_cast<u32>(swap_chain_texture->GetHeight()));
+			m_current = current_vk;
+		}
+	}
 
 	const VkFramebuffer fb = swap_chain_texture->GetFramebuffer(false);
 	if (fb == VK_NULL_HANDLE)
