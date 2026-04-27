@@ -80,7 +80,16 @@ object HomeRoute
 data class GameDetailRoute(val catalogGameId: Long)
 
 @Serializable
-data class EmulationRoute(val gamePath: String? = null, val saveSlot: Int? = null, val bootBios: Boolean = false)
+data class EmulationRoute(
+    val gamePath: String? = null,
+    val saveSlot: Int? = null,
+    val bootBios: Boolean = false,
+    val autotestMode: Boolean = false,
+    val enableEeRecompiler: Boolean? = null,
+    val enableIopRecompiler: Boolean? = null,
+    val enableVu0Recompiler: Boolean? = null,
+    val enableVu1Recompiler: Boolean? = null
+)
 
 @Serializable
 data class SettingsRoute(val tab: String = "general")
@@ -208,7 +217,16 @@ fun AppNavigation(
     LaunchedEffect(Unit) {
         onStartupReady()
     }
-    val startupDestination by produceState<StartupDestination?>(initialValue = null, key1 = preferences) {
+    val startupDestination by produceState<StartupDestination?>(
+        initialValue = null,
+        key1 = preferences,
+        key2 = launchIntentVersion
+    ) {
+        val launchRequest = GameLaunchShortcut.parseLaunchRequest(activity?.intent)
+        if (launchRequest?.autotestMode == true) {
+            value = StartupDestination.HOME
+            return@produceState
+        }
         value = combine(
             preferences.onboardingCompleted,
             preferences.biosPath,
@@ -652,6 +670,11 @@ fun AppNavigation(
                     gamePath = route.gamePath,
                     bootToBios = route.bootBios,
                     saveSlot = route.saveSlot,
+                    autotestMode = route.autotestMode,
+                    enableEeRecompilerOverride = route.enableEeRecompiler,
+                    enableIopRecompilerOverride = route.enableIopRecompiler,
+                    enableVu0RecompilerOverride = route.enableVu0Recompiler,
+                    enableVu1RecompilerOverride = route.enableVu1Recompiler,
                     restoredAfterProcessDeath = blockRestoredEmulationRoute,
                     onExit = {
                         if (!navController.popBackStack(HomeRoute, inclusive = false)) {
@@ -889,7 +912,12 @@ fun AppNavigation(
                 EmulationRoute(
                     gamePath = launchRequest.gamePath,
                     saveSlot = launchRequest.saveSlot,
-                    bootBios = launchRequest.bootBios
+                    bootBios = launchRequest.bootBios,
+                    autotestMode = launchRequest.autotestMode,
+                    enableEeRecompiler = launchRequest.enableEeRecompiler,
+                    enableIopRecompiler = launchRequest.enableIopRecompiler,
+                    enableVu0Recompiler = launchRequest.enableVu0Recompiler,
+                    enableVu1Recompiler = launchRequest.enableVu1Recompiler
                 )
             ) {
                 launchSingleTop = true

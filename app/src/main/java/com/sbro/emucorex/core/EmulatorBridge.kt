@@ -277,6 +277,7 @@ object EmulatorBridge {
         nativePaletteDraw: Boolean = false,
         memoryCardSlot1: String? = null,
         memoryCardSlot2: String? = null,
+        autotestMode: Boolean = false,
         fpuClampMode: Int = 1,
         disableHardwareReadbacks: Boolean = false,
         fpuCorrectAddSub: Boolean = true
@@ -414,6 +415,7 @@ object EmulatorBridge {
                 add(settingOp("EmuCoreX", "Renderer", "int", resolvedRenderer.toString()))
                 add(settingOp("EmuCoreX", "UpscaleMultiplier", "float", upscaleMultiplier.toString()))
                 add(settingOp("EmuCoreX", "HasContext", "bool", (context.applicationContext != null).toString()))
+                add(settingOp("EmuCoreX", "AutotestMode", "bool", autotestMode.toString()))
                 add(settingOp("EmuCore", "WarnAboutUnsafeSettings", "bool", "false"))
                 add(settingOp("EmuCore/GS", "OsdMessagesPos", "int", "0"))
                 add(customDriverOp(if (gpuDriverType == 1) customDriverPath.orEmpty() else ""))

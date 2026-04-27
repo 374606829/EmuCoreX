@@ -15,6 +15,11 @@ object GameLaunchShortcut {
     const val EXTRA_GAME_PATH = "com.sbro.emucorex.extra.GAME_PATH"
     const val EXTRA_SAVE_SLOT = "com.sbro.emucorex.extra.SAVE_SLOT"
     const val EXTRA_BOOT_BIOS = "com.sbro.emucorex.extra.BOOT_BIOS"
+    const val EXTRA_AUTOTEST_MODE = "com.sbro.emucorex.extra.AUTOTEST_MODE"
+    const val EXTRA_ENABLE_EE_RECOMPILER = "com.sbro.emucorex.extra.ENABLE_EE_RECOMPILER"
+    const val EXTRA_ENABLE_IOP_RECOMPILER = "com.sbro.emucorex.extra.ENABLE_IOP_RECOMPILER"
+    const val EXTRA_ENABLE_VU0_RECOMPILER = "com.sbro.emucorex.extra.ENABLE_VU0_RECOMPILER"
+    const val EXTRA_ENABLE_VU1_RECOMPILER = "com.sbro.emucorex.extra.ENABLE_VU1_RECOMPILER"
 
     private const val SCHEME = "emucorex"
     private const val HOST = "launch"
@@ -22,7 +27,12 @@ object GameLaunchShortcut {
     data class LaunchRequest(
         val gamePath: String? = null,
         val saveSlot: Int? = null,
-        val bootBios: Boolean = false
+        val bootBios: Boolean = false,
+        val autotestMode: Boolean = false,
+        val enableEeRecompiler: Boolean? = null,
+        val enableIopRecompiler: Boolean? = null,
+        val enableVu0Recompiler: Boolean? = null,
+        val enableVu1Recompiler: Boolean? = null
     )
 
     fun requestPinnedShortcut(
@@ -88,11 +98,22 @@ object GameLaunchShortcut {
         }
         val bootBios = intent.getBooleanExtra(EXTRA_BOOT_BIOS, false) ||
             (data?.scheme == SCHEME && data.host == HOST && data.getQueryParameter("bootBios") == "true")
+        val autotestMode = intent.getBooleanExtra(EXTRA_AUTOTEST_MODE, false) ||
+            (data?.scheme == SCHEME && data.host == HOST && data.getQueryParameter("autotest") == "true")
         if (gamePath.isNullOrBlank() && !bootBios) return null
         return LaunchRequest(
             gamePath = gamePath,
             saveSlot = saveSlot,
-            bootBios = bootBios
+            bootBios = bootBios,
+            autotestMode = autotestMode,
+            enableEeRecompiler = optionalBooleanExtra(intent, EXTRA_ENABLE_EE_RECOMPILER)
+                ?: optionalBooleanQuery(data, "enableEeRecompiler"),
+            enableIopRecompiler = optionalBooleanExtra(intent, EXTRA_ENABLE_IOP_RECOMPILER)
+                ?: optionalBooleanQuery(data, "enableIopRecompiler"),
+            enableVu0Recompiler = optionalBooleanExtra(intent, EXTRA_ENABLE_VU0_RECOMPILER)
+                ?: optionalBooleanQuery(data, "enableVu0Recompiler"),
+            enableVu1Recompiler = optionalBooleanExtra(intent, EXTRA_ENABLE_VU1_RECOMPILER)
+                ?: optionalBooleanQuery(data, "enableVu1Recompiler")
         )
     }
 
@@ -101,8 +122,26 @@ object GameLaunchShortcut {
         intent.removeExtra(EXTRA_GAME_PATH)
         intent.removeExtra(EXTRA_SAVE_SLOT)
         intent.removeExtra(EXTRA_BOOT_BIOS)
+        intent.removeExtra(EXTRA_AUTOTEST_MODE)
+        intent.removeExtra(EXTRA_ENABLE_EE_RECOMPILER)
+        intent.removeExtra(EXTRA_ENABLE_IOP_RECOMPILER)
+        intent.removeExtra(EXTRA_ENABLE_VU0_RECOMPILER)
+        intent.removeExtra(EXTRA_ENABLE_VU1_RECOMPILER)
         if (intent.data?.scheme == SCHEME && intent.data?.host == HOST) {
             intent.data = null
+        }
+    }
+
+    private fun optionalBooleanExtra(intent: Intent, key: String): Boolean? {
+        return if (intent.hasExtra(key)) intent.getBooleanExtra(key, false) else null
+    }
+
+    private fun optionalBooleanQuery(data: Uri?, key: String): Boolean? {
+        if (data?.scheme != SCHEME || data.host != HOST) return null
+        return when (data.getQueryParameter(key)?.lowercase()) {
+            "true", "1", "yes", "on" -> true
+            "false", "0", "no", "off" -> false
+            else -> null
         }
     }
 

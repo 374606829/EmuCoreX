@@ -787,6 +787,42 @@ void SSE_MULSS(mV, const xmm& to, const xmm& from, const xmm& t1 = a64::NoVReg, 
 //	clampOp(xMUL.SS, false);
     clampOp(armAsm->Fmul, false);
 }
+
+void SSE_FMADDPS(mV, const xmm& to, const xmm& mul1, const xmm& mul2, const xmm& t1 = a64::NoVReg, const xmm& t2 = a64::NoVReg)
+{
+	mVUclamp3(mVU, to, t1, 0xf);
+	mVUclamp3(mVU, mul1, t1, 0xf);
+	mVUclamp3(mVU, mul2, t1, 0xf);
+	armAsm->Fmla(to.V4S(), mul1.V4S(), mul2.V4S());
+	mVUclamp4(mVU, to, t1, 0xf);
+}
+
+void SSE_FMADDSS(mV, const xmm& to, const xmm& mul1, const xmm& mul2, const xmm& t1 = a64::NoVReg, const xmm& t2 = a64::NoVReg)
+{
+	mVUclamp3(mVU, to, t1, 0x8);
+	mVUclamp3(mVU, mul1, t1, 0x8);
+	mVUclamp3(mVU, mul2, t1, 0x8);
+	armAsm->Fmla(to.S(), mul1.S(), mul2.S());
+	mVUclamp4(mVU, to, t1, 0x8);
+}
+
+void SSE_FMSUBPS(mV, const xmm& to, const xmm& mul1, const xmm& mul2, const xmm& t1 = a64::NoVReg, const xmm& t2 = a64::NoVReg)
+{
+	mVUclamp3(mVU, to, t1, 0xf);
+	mVUclamp3(mVU, mul1, t1, 0xf);
+	mVUclamp3(mVU, mul2, t1, 0xf);
+	armAsm->Fmls(to.V4S(), mul1.V4S(), mul2.V4S());
+	mVUclamp4(mVU, to, t1, 0xf);
+}
+
+void SSE_FMSUBSS(mV, const xmm& to, const xmm& mul1, const xmm& mul2, const xmm& t1 = a64::NoVReg, const xmm& t2 = a64::NoVReg)
+{
+	mVUclamp3(mVU, to, t1, 0x8);
+	mVUclamp3(mVU, mul1, t1, 0x8);
+	mVUclamp3(mVU, mul2, t1, 0x8);
+	armAsm->Fmls(to.S(), mul1.S(), mul2.S());
+	mVUclamp4(mVU, to, t1, 0x8);
+}
 void SSE_DIVPS(mV, const xmm& to, const xmm& from, const xmm& t1 = a64::NoVReg, const xmm& t2 = a64::NoVReg)
 {
 //	clampOp(xDIV.PS, true);

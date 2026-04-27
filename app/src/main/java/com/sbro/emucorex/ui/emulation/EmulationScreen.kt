@@ -267,6 +267,11 @@ fun EmulationScreen(
     gamePath: String? = null,
     bootToBios: Boolean = false,
     saveSlot: Int? = null,
+    autotestMode: Boolean = false,
+    enableEeRecompilerOverride: Boolean? = null,
+    enableIopRecompilerOverride: Boolean? = null,
+    enableVu0RecompilerOverride: Boolean? = null,
+    enableVu1RecompilerOverride: Boolean? = null,
     restoredAfterProcessDeath: Boolean = false,
     onExit: () -> Unit,
     viewModel: EmulationViewModel = viewModel()
@@ -422,9 +427,27 @@ fun EmulationScreen(
         }
     }
 
-    LaunchedEffect(gamePath, bootToBios, restoredAfterProcessDeath) {
+    LaunchedEffect(
+        gamePath,
+        bootToBios,
+        autotestMode,
+        enableEeRecompilerOverride,
+        enableIopRecompilerOverride,
+        enableVu0RecompilerOverride,
+        enableVu1RecompilerOverride,
+        restoredAfterProcessDeath
+    ) {
         if (restoredAfterProcessDeath) return@LaunchedEffect
-        viewModel.startEmulation(gamePath, saveSlot, bootToBios)
+        viewModel.startEmulation(
+            path = gamePath,
+            slotToLoad = saveSlot,
+            bootToBios = bootToBios,
+            autotestMode = autotestMode,
+            enableEeRecompilerOverride = enableEeRecompilerOverride,
+            enableIopRecompilerOverride = enableIopRecompilerOverride,
+            enableVu0RecompilerOverride = enableVu0RecompilerOverride,
+            enableVu1RecompilerOverride = enableVu1RecompilerOverride
+        )
     }
 
     LaunchedEffect(gamepadConnected, uiState.showMenu) {

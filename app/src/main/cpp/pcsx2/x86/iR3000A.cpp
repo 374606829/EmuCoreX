@@ -9,6 +9,7 @@
 #include "IopHw.h"
 #include "Common.h"
 #include "VMManager.h"
+#include "core/state/CoreStateExposure.h"
 
 #include <time.h>
 
@@ -239,6 +240,8 @@ static const void* _DynGen_EnterRecompiledCode()
 #endif
         armMoveAddressToReg(RSTATE_x26, iopMem->Main);
         armMoveAddressToReg(RSTATE_x29, &psxRecLUT);
+        armMoveAddressToReg(RSTATE_PSX, &psxRegs);
+        armMoveAddressToReg(RSTATE_CPU, GetCoreStateRuntimePackPtr());
 
 //		xJMP((void*)iopDispatcherReg);
         armEmitJmp(iopDispatcherReg);

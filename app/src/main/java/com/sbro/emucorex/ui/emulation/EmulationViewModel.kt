@@ -658,7 +658,16 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
         syncNativePerformanceOverlayState(_uiState.value)
     }
 
-    fun startEmulation(path: String?, slotToLoad: Int? = null, bootToBios: Boolean = false) {
+    fun startEmulation(
+        path: String?,
+        slotToLoad: Int? = null,
+        bootToBios: Boolean = false,
+        autotestMode: Boolean = false,
+        enableEeRecompilerOverride: Boolean? = null,
+        enableIopRecompilerOverride: Boolean? = null,
+        enableVu0RecompilerOverride: Boolean? = null,
+        enableVu1RecompilerOverride: Boolean? = null
+    ) {
         if (_uiState.value.isStarting) return
         val normalizedSlotToLoad = slotToLoad?.let { normalizeSaveSlot(it) }
         val hasPendingStateLoad = !bootToBios && normalizedSlotToLoad != null
@@ -686,20 +695,26 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                 )
 
                 val config = loadLaunchConfig()
+                val enableEeRecompiler = enableEeRecompilerOverride ?: config.enableEeRecompiler
+                val enableIopRecompiler = enableIopRecompilerOverride ?: config.enableIopRecompiler
+                val enableVu0Recompiler = enableVu0RecompilerOverride ?: config.enableVu0Recompiler
+                val enableVu1Recompiler = enableVu1RecompilerOverride ?: config.enableVu1Recompiler
 
-                val resolvedBiosPath = DocumentPathResolver.prepareBiosDirectory(getApplication(), config.biosPath)
-                    ?: config.biosPath?.let(DocumentPathResolver::resolveDirectoryPath)
-                val biosDirExists = !resolvedBiosPath.isNullOrBlank() && File(resolvedBiosPath).exists()
-                val biosLooksUsable = BiosValidator.hasUsableBiosFiles(getApplication(), config.biosPath)
-                if (!biosDirExists || !biosLooksUsable) {
-                    _uiState.value = _uiState.value.copy(
-                        isStarting = false,
-                        statusMessage = null,
-                        toastMessage = "bios_missing"
-                    )
-                    delay(2500)
-                    _uiState.value = _uiState.value.copy(toastMessage = null)
-                    return@withLock
+                if (!autotestMode) {
+                    val resolvedBiosPath = DocumentPathResolver.prepareBiosDirectory(getApplication(), config.biosPath)
+                        ?: config.biosPath?.let(DocumentPathResolver::resolveDirectoryPath)
+                    val biosDirExists = !resolvedBiosPath.isNullOrBlank() && File(resolvedBiosPath).exists()
+                    val biosLooksUsable = BiosValidator.hasUsableBiosFiles(getApplication(), config.biosPath)
+                    if (!biosDirExists || !biosLooksUsable) {
+                        _uiState.value = _uiState.value.copy(
+                            isStarting = false,
+                            statusMessage = null,
+                            toastMessage = "bios_missing"
+                        )
+                        delay(2500)
+                        _uiState.value = _uiState.value.copy(toastMessage = null)
+                        return@withLock
+                    }
                 }
 
                 _uiState.value = _uiState.value.copy(
@@ -716,10 +731,10 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     gpuDriverType = config.gpuDriverType,
                     customDriverPath = config.customDriverPath,
                     aspectRatio = config.aspectRatio,
-                    enableEeRecompiler = config.enableEeRecompiler,
-                    enableIopRecompiler = config.enableIopRecompiler,
-                    enableVu0Recompiler = config.enableVu0Recompiler,
-                    enableVu1Recompiler = config.enableVu1Recompiler,
+                    enableEeRecompiler = enableEeRecompiler,
+                    enableIopRecompiler = enableIopRecompiler,
+                    enableVu0Recompiler = enableVu0Recompiler,
+                    enableVu1Recompiler = enableVu1Recompiler,
                     mtvu = config.mtvu,
                     fastCdvd = config.fastCdvd,
                     enableCheats = config.enableCheats,
@@ -774,6 +789,7 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     forceEvenSpritePosition = config.forceEvenSpritePosition,
                     nativePaletteDraw = config.nativePaletteDraw,
                     fpuClampMode = config.fpuClampMode,
+                    autotestMode = autotestMode,
                     disableHardwareReadbacks = config.disableHardwareReadbacks,
                     fpuCorrectAddSub = config.fpuCorrectAddSub
                 )
@@ -818,6 +834,19 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                         cheatsGameKey = null,
                         availableCheats = emptyList()
                     )
+                } else if (autotestMode) {
+                    val safePath = path.orEmpty()
+                    currentGameTitle = File(safePath).nameWithoutExtension.ifBlank { "Autotest ELF" }
+                    currentGameSerial = ""
+                    currentGameCrc = ""
+                    currentGameSource = "autotest_elf"
+                    _uiState.value = _uiState.value.copy(
+                        currentGameTitle = currentGameTitle,
+                        currentGameSubtitle = currentGameSubtitle(),
+                        gameSettingsProfileActive = false,
+                        cheatsGameKey = null,
+                        availableCheats = emptyList()
+                    )
                 } else {
                     val safePath = path.orEmpty()
                     val existingProfile = currentGamePath?.let(perGameSettingsRepository::get)
@@ -848,7 +877,7 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     isStarting = false,
                     statusMessage = "status_starting_core"
                 )
-                if (!bootToBios && !path.isNullOrBlank()) {
+                if (!autotestMode && !bootToBios && !path.isNullOrBlank()) {
                     preferences.markGameLaunched(
                         path = path,
                         title = currentGameTitle.ifBlank {

@@ -738,9 +738,12 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	}
 
 #ifdef __ANDROID__
-	if (!s_elf_override.empty())
+	const bool autotest_mode = si.GetBoolValue("EmuCoreX", "AutotestMode", false);
+	if (!s_elf_override.empty() && !autotest_mode)
 	{
-		// Autotest/homebrew ELF runs need the precise EE FPU JIT path and PS2-default EE round modes.
+		// Homebrew ELF runs need the precise EE FPU JIT path and PS2-default EE round modes.
+		// Autotest launches keep the explicit runtime settings so interpreter/JIT matrices
+		// are comparable against the checked-in expected outputs.
 		EmuConfig.Cpu.Recompiler.SetEEClampMode(3);
 		EmuConfig.Cpu.FPUFPCR.SetRoundMode(FPRoundMode::ChopZero);
 		EmuConfig.Cpu.FPUDivFPCR.SetRoundMode(FPRoundMode::Nearest);
@@ -1472,13 +1475,12 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 
 	s_elf_override = boot_params.elf_override;
 #ifdef __ANDROID__
-	// The Android autotest override in LoadCoreSettings() only fires when s_elf_override
-	// is non-empty. CPUThreadInitialize() and the earlier ApplySettings() already ran
-	// with an empty override, leaving EmuConfig.Cpu.Recompiler.fpuFullMode=false and the
-	// runtime FPCR mirror in its default state. We need ApplySettings() (not LoadSettings)
-	// here so that CheckForConfigChanges fires: that is what refreshes the ARM64 backend
-	// runtime mirror, flushes the EE block cache, and clears CPU execution caches so the
-	// autotest's ChopZero / fpuFullMode takes effect on freshly emitted FPU blocks.
+	// The Android ELF override in LoadCoreSettings() only fires when s_elf_override is
+	// non-empty. CPUThreadInitialize() and the earlier ApplySettings() already ran with
+	// an empty override, leaving the runtime FPCR mirror on the previous settings. We
+	// need ApplySettings() (not LoadSettings) here so CheckForConfigChanges refreshes the
+	// ARM64 backend runtime mirror, flushes the EE block cache, and clears CPU execution
+	// caches before freshly emitted ELF blocks run.
 	if (!s_elf_override.empty())
 		ApplySettings();
 #endif
@@ -2850,6 +2852,12 @@ void VMManager::UpdateCPUImplementations()
 		EmuConfig.Cpu.Recompiler.EnableVU0 ? "microVU" : "intVU",
 		EmuConfig.Cpu.Recompiler.EnableVU1 ? "microVU" : "intVU",
 		static_cast<const void*>(Cpu), static_cast<const void*>(psxCpu));
+	Console.WriteLn("(VMManager) CPU FPU config: EEClamp=%u EERound=%u EEDivRound=%u VU0Round=%u VU1Round=%u",
+		EmuConfig.Cpu.Recompiler.GetEEClampMode(),
+		static_cast<unsigned>(EmuConfig.Cpu.FPUFPCR.GetRoundMode()),
+		static_cast<unsigned>(EmuConfig.Cpu.FPUDivFPCR.GetRoundMode()),
+		static_cast<unsigned>(EmuConfig.Cpu.VU0FPCR.GetRoundMode()),
+		static_cast<unsigned>(EmuConfig.Cpu.VU1FPCR.GetRoundMode()));
 }
 
 void VMManager::Internal::ClearCPUExecutionCaches()

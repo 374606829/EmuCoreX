@@ -39,6 +39,7 @@ Logs/
 hs_err_pid*
 /autotests/
 /tests/
+/Docs/
 
 # Nested repositories and local vendor metadata
 **/.git/

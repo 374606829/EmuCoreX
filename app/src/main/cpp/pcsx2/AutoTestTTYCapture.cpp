@@ -31,6 +31,11 @@ namespace
 		return EmuConfig.Cpu.Recompiler.EnableEE ? "ee_rec" : "ee_interp";
 	}
 
+	static const char* GetIOPBackendLabel()
+	{
+		return EmuConfig.Cpu.Recompiler.EnableIOP ? "iop_rec" : "iop_interp";
+	}
+
 	static const char* GetVU0BackendLabel()
 	{
 		return EmuConfig.Cpu.Recompiler.EnableVU0 ? "vu0_microvu" : "vu0_interpreter";
@@ -43,7 +48,7 @@ namespace
 
 	static std::string GetBackendLabel()
 	{
-		return fmt::format("{}_{}_{}", GetEEBackendLabel(), GetVU0BackendLabel(), GetVU1BackendLabel());
+		return fmt::format("{}_{}_{}_{}", GetEEBackendLabel(), GetIOPBackendLabel(), GetVU0BackendLabel(), GetVU1BackendLabel());
 	}
 } // namespace
 

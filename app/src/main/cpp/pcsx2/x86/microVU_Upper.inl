@@ -343,13 +343,18 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		if (clampType & cFt) mVUclamp2(mVU, Ft, a64::NoVReg, _X_Y_Z_W);
 		if (clampType & cFs) mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
 
-		if (_XYZW_SS) SSE_SS[2](mVU, Fs, Ft, a64::NoVReg, a64::NoVReg);
-		else          SSE_PS[2](mVU, Fs, Ft, a64::NoVReg, a64::NoVReg);
-
 		if (_XYZW_SS || _X_Y_Z_W == 0xf)
 		{
-			if (_XYZW_SS) SSE_SS[opType](mVU, ACC, Fs, tempFt, a64::NoVReg);
-			else          SSE_PS[opType](mVU, ACC, Fs, tempFt, a64::NoVReg);
+			if (_XYZW_SS)
+			{
+				if (opType == 0) SSE_FMADDSS(mVU, ACC, Fs, Ft, tempFt, a64::NoVReg);
+				else             SSE_FMSUBSS(mVU, ACC, Fs, Ft, tempFt, a64::NoVReg);
+			}
+			else
+			{
+				if (opType == 0) SSE_FMADDPS(mVU, ACC, Fs, Ft, tempFt, a64::NoVReg);
+				else             SSE_FMSUBPS(mVU, ACC, Fs, Ft, tempFt, a64::NoVReg);
+			}
 			mVUupdateFlags(mVU, ACC, Fs, tempFt);
 			if (_XYZW_SS && _X_Y_Z_W != 8) {
 //                xPSHUF.D(ACC, ACC, shuffleSS(_X_Y_Z_W));
@@ -361,7 +366,8 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 			const xmm& tempACC = mVU.regAlloc->allocReg();
 //			xMOVAPS(tempACC, ACC);
             armAsm->Mov(tempACC.Q(), ACC.Q());
-			SSE_PS[opType](mVU, tempACC, Fs, tempFt, a64::NoVReg);
+			if (opType == 0) SSE_FMADDPS(mVU, tempACC, Fs, Ft, tempFt, a64::NoVReg);
+			else             SSE_FMSUBPS(mVU, tempACC, Fs, Ft, tempFt, a64::NoVReg);
 			mVUmergeRegs(ACC, tempACC, _X_Y_Z_W);
 			mVUupdateFlags(mVU, ACC, Fs, tempFt);
 			mVU.regAlloc->clearNeeded(tempACC);
@@ -398,8 +404,20 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (clampType & cACC) mVUclamp2(mVU, ACC, a64::NoVReg, _X_Y_Z_W);
 
 
-		if (_XYZW_SS) { SSE_SS[2](mVU, Fs, Ft, a64::NoVReg, a64::NoVReg); SSE_SS[0](mVU, Fs, ACC, tempFt, a64::NoVReg); }
-		else          { SSE_PS[2](mVU, Fs, Ft, a64::NoVReg, a64::NoVReg); SSE_PS[0](mVU, Fs, ACC, tempFt, a64::NoVReg); }
+		{
+			const xmm& result = mVU.regAlloc->allocReg();
+			armAsm->Mov(result.Q(), ACC.Q());
+			if (_XYZW_SS)
+				SSE_FMADDSS(mVU, result, Fs, Ft, tempFt, a64::NoVReg);
+			else
+				SSE_FMADDPS(mVU, result, Fs, Ft, tempFt, a64::NoVReg);
+
+			if (_XYZW_SS)
+				armAsm->Mov(Fs.S(), 0, result.S(), 0);
+			else
+				mVUmergeRegs(Fs, result, _X_Y_Z_W);
+			mVU.regAlloc->clearNeeded(result);
+		}
 
 		if (_XYZW_SS2) {
 //            xPSHUF.D(ACC, ACC, shuffleSS(_X_Y_Z_W));
@@ -433,8 +451,8 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (clampType & cFs)  mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
 		if (clampType & cACC) mVUclamp2(mVU, Fd, a64::NoVReg, _X_Y_Z_W);
 
-		if (_XYZW_SS) { SSE_SS[2](mVU, Fs, Ft, a64::NoVReg, a64::NoVReg); SSE_SS[1](mVU, Fd, Fs, tempFt, a64::NoVReg); }
-		else          { SSE_PS[2](mVU, Fs, Ft, a64::NoVReg, a64::NoVReg); SSE_PS[1](mVU, Fd, Fs, tempFt, a64::NoVReg); }
+		if (_XYZW_SS) SSE_FMSUBSS(mVU, Fd, Fs, Ft, tempFt, a64::NoVReg);
+		else          SSE_FMSUBPS(mVU, Fd, Fs, Ft, tempFt, a64::NoVReg);
 
 		mVUupdateFlags(mVU, Fd, Fs, tempFt);
 
