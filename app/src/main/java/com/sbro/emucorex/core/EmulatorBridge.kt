@@ -353,6 +353,7 @@ object EmulatorBridge {
                 add(settingOp("EmuCore/CPU/Recompiler", "EnableVU0", "bool", enableVu0Recompiler.toString()))
                 add(settingOp("EmuCore/CPU/Recompiler", "EnableVU1", "bool", enableVu1Recompiler.toString()))
                 add(settingOp("EmuCore/Speedhacks", "vuThread", "bool", mtvu.toString()))
+                add(settingOp("EmuCore/Speedhacks", "vu1Instant", "bool", "false"))
                 add(settingOp("EmuCore/Speedhacks", "fastCDVD", "bool", fastCdvd.toString()))
                 add(settingOp("EmuCore", "EnableCheats", "bool", enableCheats.toString()))
                 add(settingOp("EmuCore/GS", "HWDownloadMode", "int", hwDownloadMode.toString()))

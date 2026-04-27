@@ -106,7 +106,33 @@ void vu1ExecMicro(u32 addr)
 	vu1ExecMicroLocal(addr);
 }
 
+void vu1SyncMTVUIfIdle()
+{
+	if (!THREAD_VU1)
+		return;
+
+	if (!(VU0.VI[REG_VPU_STAT].UL & 0x100))
+		return;
+
+	vu1Thread.KickStart();
+	if (!vu1Thread.IsDone())
+		vu1Thread.WaitVU();
+
+	vu1Thread.Get_MTVUChanges();
+	VU0.VI[REG_VPU_STAT].UL &= ~0x100;
+}
+
 void MTVUInterrupt()
 {
+	if (THREAD_VU1 && !vu1Thread.IsDone())
+	{
+		vu1Thread.KickStart();
+		CPU_INT(VU_MTVU_BUSY, 256);
+		return;
+	}
+
+	if (THREAD_VU1)
+		vu1Thread.Get_MTVUChanges();
+
 	VU0.VI[REG_VPU_STAT].UL &= ~0xFF00;
 }

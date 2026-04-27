@@ -14,6 +14,7 @@
 #include "MTVU.h"
 #include "GS.h"
 #include "Gif_Unit.h"
+#include "Vif_Dma.h"
 #include "iR5900.h"
 #include "R5900OpcodeTables.h"
 #include "common/emitter/x86emitter.h"

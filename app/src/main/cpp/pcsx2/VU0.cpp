@@ -146,6 +146,9 @@ void CFC2() {
 
 	if (_Rt_ == 0) return;
 
+	if (_Fs_ == REG_VPU_STAT)
+		vu1SyncMTVUIfIdle();
+
 	if (_Fs_ == REG_R)
 		cpuRegs.GPR.r[_Rt_].UL[0] = VU0.VI[REG_R].UL & 0x7FFFFF;
 	else

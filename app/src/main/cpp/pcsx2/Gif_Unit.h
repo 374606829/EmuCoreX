@@ -525,6 +525,15 @@ struct Gif_Path
 	// MTVU: Gets called after VU1 execution on MTVU thread
 	void FinishGSPacketMTVU()
 	{
+		static int mtvu_path1_debug_count = 0;
+		if (idx == GIF_PATH_1 && gsPack.size && mtvu_path1_debug_count < 80)
+		{
+			const u64 tag0 = *reinterpret_cast<const u64*>(&buffer[gsPack.offset]);
+			const u64 tag1 = *reinterpret_cast<const u64*>(&buffer[gsPack.offset + 8]);
+			Console.WriteLn("DBG PATH1 MTVU packet[%d] size=%u offset=%u tag=%016llx_%016llx",
+				mtvu_path1_debug_count++, gsPack.size, gsPack.offset,
+				static_cast<unsigned long long>(tag1), static_cast<unsigned long long>(tag0));
+		}
 		// Performance note: fetch_add atomic operation might create some stall for atomic
 		// operation in gsPack.push
 		readAmount.fetch_add(gsPack.size + gsPack.readAmount, std::memory_order_acq_rel);
@@ -613,6 +622,16 @@ struct Gif_Unit
 	// Adds a finished GS Packet to the MTGS ring buffer
 	__fi void AddCompletedGSPacket(GS_Packet& gsPack, GIF_PATH path)
 	{
+		static int path1_debug_count = 0;
+		if (path == GIF_PATH_1 && gsPack.size && path1_debug_count < 80)
+		{
+			const Gif_Path& gif_path = gifPath[path];
+			const u64 tag0 = *reinterpret_cast<const u64*>(&gif_path.buffer[gsPack.offset]);
+			const u64 tag1 = *reinterpret_cast<const u64*>(&gif_path.buffer[gsPack.offset + 8]);
+			Console.WriteLn("DBG PATH1 LOCAL packet[%d] size=%u offset=%u tag=%016llx_%016llx",
+				path1_debug_count++, gsPack.size, gsPack.offset,
+				static_cast<unsigned long long>(tag1), static_cast<unsigned long long>(tag0));
+		}
 		if (gsPack.size == ~0u)
 			Gif_AddGSPacketMTVU(gsPack, path);
 		else

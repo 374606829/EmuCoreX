@@ -748,6 +748,11 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 		EmuConfig.Cpu.FPUFPCR.SetRoundMode(FPRoundMode::ChopZero);
 		EmuConfig.Cpu.FPUDivFPCR.SetRoundMode(FPRoundMode::Nearest);
 	}
+
+	if (EmuConfig.Cpu.Recompiler.EnableVU1)
+	{
+		EmuConfig.Speedhacks.vu1Instant = false;
+	}
 #endif
 
 	// The ARM64 JIT reads FPUFPCR/FPUDivFPCR via the backend runtime-config mirror

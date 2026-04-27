@@ -1111,6 +1111,11 @@ static bool IsEeBranchOpcode(u32 opcode)
 					return false;
 			}
 
+		case 0x10: // COP0
+		case 0x11: // COP1
+		case 0x12: // COP2
+			return (((opcode >> 21) & 0x1F) == 8) && (((opcode >> 16) & 0x1F) < 4);
+
 		case 1:  // REGIMM
 		case 2:  // J
 		case 3:  // JAL

@@ -2437,6 +2437,8 @@ void _vuXGKICKTransfermVU(bool flush)
 		{
 			//VUM_LOG("XGKICK transfer finished");
 			VU1.xgkickenable = false;
+			VU0.VI[REG_VPU_STAT].UL &= ~(1 << 12);
+			vif1ResumeDmaFromGifPathSignal(8);
 			// Check if VIF is waiting for the GIF to not be busy
 		}
 	}
@@ -2524,6 +2526,7 @@ mVUop(mVU_XGKICK)
 //			xMOV(ptr32[&VU1.xgkickenable], 1);
             armAsm->Mov(a64::WRegister(EAX), 1);
             armAsm->Str(a64::WRegister(EAX), PTR_CPU(vuRegs[1].xgkickenable));
+            armOrr(PTR_CPU(vuRegs[0].VI[REG_VPU_STAT].UL), (1 << 12));
 //			xMOV(ptr32[&VU1.xgkickendpacket], 0);
             armAsm->Str(a64::wzr, PTR_CPU(vuRegs[1].xgkickendpacket));
 //			xMOV(ptr32[&VU1.xgkicksizeremaining], 0);

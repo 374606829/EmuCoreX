@@ -491,6 +491,9 @@ static void recCFC2()
 			mVUFinishVU0();
 	}
 
+	if (_Rd_ == REG_VPU_STAT)
+		armEmitCall(reinterpret_cast<void*>(vu1SyncMTVUIfIdle));
+
 	const int regt = _allocX86reg(X86TYPE_GPR, _Rt_, MODE_WRITE);
     auto regT = a64::XRegister(regt);
 	pxAssert(!GPR_IS_CONST1(_Rt_));

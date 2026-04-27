@@ -774,9 +774,20 @@ static void _setupBranchTest()
     armAsm->Tst(EAX, FPUflagC);
 }
 
+#define REC_COP1_BRANCH_DELAY_FALLBACK(op) \
+	do \
+	{ \
+		if (HasBranchInDelaySlot()) \
+		{ \
+			recBranchCall(R5900::Interpreter::OpcodeImpl::COP1::op); \
+			return; \
+		} \
+	} while (0)
+
 void recBC1F()
 {
 	EE::Profiler.EmitOp(eeOpcode::BC1F);
+	REC_COP1_BRANCH_DELAY_FALLBACK(BC1F);
 	const u32 branchTo = ((s32)_Imm_ * 4) + pc;
 	const bool swap = TrySwapDelaySlot(0, 0, 0, true);
 	_setupBranchTest();
@@ -790,6 +801,7 @@ void recBC1F()
 void recBC1T()
 {
 	EE::Profiler.EmitOp(eeOpcode::BC1T);
+	REC_COP1_BRANCH_DELAY_FALLBACK(BC1T);
 	const u32 branchTo = ((s32)_Imm_ * 4) + pc;
 	const bool swap = TrySwapDelaySlot(0, 0, 0, true);
 	_setupBranchTest();
@@ -803,6 +815,7 @@ void recBC1T()
 void recBC1FL()
 {
 	EE::Profiler.EmitOp(eeOpcode::BC1FL);
+	REC_COP1_BRANCH_DELAY_FALLBACK(BC1FL);
 	const u32 branchTo = ((s32)_Imm_ * 4) + pc;
 	_setupBranchTest();
 //	recDoBranchImm(branchTo, JNZ32(0), true, false);
@@ -815,6 +828,7 @@ void recBC1FL()
 void recBC1TL()
 {
 	EE::Profiler.EmitOp(eeOpcode::BC1TL);
+	REC_COP1_BRANCH_DELAY_FALLBACK(BC1TL);
 	const u32 branchTo = ((s32)_Imm_ * 4) + pc;
 	_setupBranchTest();
 //	recDoBranchImm(branchTo, JZ32(0), true, false);
