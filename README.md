@@ -1,7 +1,7 @@
 # EmuCoreX
 
 [![License: GPL v3+](https://img.shields.io/badge/License-GPLv3%2B-blue.svg)](LICENSE)
-[![Support EmuCoreX on Patreon](https://img.shields.io/badge/Patreon-Support%20EmuCoreX-ff424d?logo=patreon&logoColor=white)](https://patreon.com/emucore)
+[![Support EmuCoreX on Patreon](https://img.shields.io/badge/Patreon-Support%20EmuCoreX-ff424d?logo=patreon&logoColor=white)](https://www.patreon.com/c/emucore/membership)
 [![Join the EmuCoreX Discord](https://img.shields.io/badge/Discord-Join%20our%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/c5EBeNRpz2)
 
 EmuCoreX is a PlayStation 2 library and launcher for Android. It pairs a custom Android interface with a PCSX2-based emulation core adapted by EmuCoreX for Android.
@@ -104,7 +104,7 @@ EmuCoreX builds on the open-source PCSX2 project together with its own Android i
 If you want to support ongoing development:
 
 - Website: https://emucorex.web.app/
-- Patreon: https://patreon.com/emucore
+- Patreon: https://www.patreon.com/c/emucore/membership
 - Discord: https://discord.gg/c5EBeNRpz2
 - More apps by the author: https://play.google.com/store/apps/dev?id=7136622298887775989
 
