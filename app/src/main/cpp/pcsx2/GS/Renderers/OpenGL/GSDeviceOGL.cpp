@@ -4,14 +4,18 @@
 #include "GS/Renderers/OpenGL/GLContext.h"
 #include "GS/Renderers/OpenGL/GSDeviceOGL.h"
 #include "GS/Renderers/OpenGL/GLState.h"
+#include "GS/Renderers/OpenGL/ReShade/ReShadeChainGL.h"
 #include "GS/GSState.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
+#include "Config.h"
 #include "platform/host/Host.h"
 
 #include "common/Console.h"
 #include "common/Error.h"
+#include "common/FileSystem.h"
+#include "common/Path.h"
 #include "common/ScopedGuard.h"
 #include "common/StringUtil.h"
 
@@ -240,6 +244,65 @@ GSDeviceOGL::GSDeviceOGL() = default;
 GSDeviceOGL::~GSDeviceOGL()
 {
 	pxAssert(!m_gl_context);
+}
+
+void GSDeviceOGL::EnsureReShadeChainInitialized()
+{
+	// Mirrors GSDeviceVK::EnsureReShadeChainInitialized: builds the chain
+	// once on the first frame after Create(), so all GL state (texture
+	// formats, GLES level, samplers) is fully introspectable. A failed
+	// LoadPreset leaves the chain in passthrough mode and we never retry
+	// in the same session - cheap subsequent BeginPresent calls.
+	if (m_reshade_chain_init_attempted)
+		return;
+	m_reshade_chain_init_attempted = true;
+
+	m_reshade_chain = std::make_unique<ReShade::ChainGL>();
+
+	// MVP convention: presets live under <DataRoot>/shaders/reshade/
+	// (mirrored across both backends so the same INI is picked up).
+	const std::string reshade_dir = Path::Combine(EmuFolders::DataRoot, "shaders/reshade");
+	const std::string preset_path = Path::Combine(reshade_dir, "preset.ini");
+
+	ReShade::ChainConfigGL cfg;
+	if (FileSystem::FileExists(preset_path.c_str()))
+	{
+		cfg.preset_path = preset_path;
+	}
+	else
+	{
+		// Fall back to the literal name used by the verification asset
+		// (UTF-8 bytes for "1.默认·适应大部分.ini"). Keeping the bytes
+		// inline so the file works on toolchains that don't enable
+		// /utf-8 by default.
+		const std::string alt = Path::Combine(reshade_dir,
+			"1.\xe9\xbb\x98\xe8\xae\xa4\xc2\xb7\xe9\x80\x82\xe5\xba\x94\xe5\xa4\xa7\xe9\x83\xa8\xe5\x88\x86.ini");
+		if (FileSystem::FileExists(alt.c_str()))
+			cfg.preset_path = alt;
+	}
+
+	const std::string shared_shaders = Path::Combine(reshade_dir, "reshade-shaders/Shaders");
+	if (FileSystem::DirectoryExists(shared_shaders.c_str()))
+		cfg.extra_search_paths.push_back(shared_shaders);
+
+	if (cfg.preset_path.empty())
+	{
+		Console.WriteLn("[ReShade] No preset found under '%s', chain disabled this session", reshade_dir.c_str());
+		return;
+	}
+
+	const bool ok = m_reshade_chain->LoadPreset(this, cfg);
+	if (!ok)
+	{
+		Console.WriteLn("[ReShade] LoadPreset reported no runnable effects; chain stays in passthrough");
+	}
+}
+
+void GSDeviceOGL::ReloadReShadeChain()
+{
+	if (m_reshade_chain)
+		m_reshade_chain->Reset();
+	m_reshade_chain_init_attempted = false;
 }
 
 std::vector<GSAdapterInfo> GSDeviceOGL::GetAdapterInfo()
@@ -1056,6 +1119,17 @@ void GSDeviceOGL::SetSwapInterval()
 
 void GSDeviceOGL::DestroyResources()
 {
+	// Tear the ReShade chain down before any device-owned GL handles go
+	// away (FBOs, textures, samplers, programs). The chain owns its own
+	// objects but it queries the device for samplers / GLES level / format
+	// mappings, so destroying it first keeps the destruction order clean.
+	if (m_reshade_chain)
+	{
+		m_reshade_chain->Reset();
+		m_reshade_chain.reset();
+	}
+	m_reshade_chain_init_attempted = false;
+
 	m_shader_cache.Close();
 
 	if (m_palette_ss != 0)
@@ -1160,6 +1234,16 @@ void GSDeviceOGL::ResizeWindow(u32 new_window_width, u32 new_window_height, floa
 
 	m_gl_context->ResizeSurface(new_window_width, new_window_height);
 	m_window_info = m_gl_context->GetWindowInfo();
+
+	// Tell the ReShade chain to drop its swap-chain-sized intermediate
+	// RTs; they get reallocated lazily on the next Apply() with the new
+	// dimensions.
+	if (m_reshade_chain)
+	{
+		m_reshade_chain->NotifyBackbufferResized(
+			static_cast<u32>(m_window_info.surface_width),
+			static_cast<u32>(m_window_info.surface_height));
+	}
 }
 
 bool GSDeviceOGL::SupportsExclusiveFullscreen() const
@@ -1188,6 +1272,29 @@ GSDevice::PresentResult GSDeviceOGL::BeginPresent(bool frame_skip)
 {
 	if (frame_skip || m_window_info.type == WindowInfo::Type::Surfaceless)
 		return PresentResult::FrameSkipped;
+
+	// Run the ReShade-style post-processing chain before we clear the
+	// default framebuffer for this frame. Mirrors GSDeviceVK::BeginPresent:
+	// on entry m_current is the freshly-merged game frame, the chain may
+	// rewrite it to point at one of its own intermediate render targets,
+	// and PresentRect picks the result up via the device's m_current
+	// when it is invoked through GSRenderer::PresentCurrentFrame() and via
+	// the renderer-local copy otherwise. Failures inside the chain are
+	// swallowed and the chain falls back to passthrough so the existing
+	// present path keeps working without crashes (per MVP §4 fallback).
+	if (m_current)
+	{
+		EnsureReShadeChainInitialized();
+		if (m_reshade_chain && m_reshade_chain->IsActive())
+		{
+			GSTextureOGL* current_gl = static_cast<GSTextureOGL*>(m_current);
+			const GSVector2i window_size = GetWindowSize();
+			m_reshade_chain->Apply(current_gl,
+				static_cast<u32>(window_size.x),
+				static_cast<u32>(window_size.y));
+			m_current = current_gl;
+		}
+	}
 
 	OMSetFBO(0);
 	OMSetColorMaskState();

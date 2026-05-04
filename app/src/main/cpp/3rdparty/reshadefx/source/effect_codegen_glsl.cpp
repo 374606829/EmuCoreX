@@ -768,6 +768,23 @@ protected:
 		return escape_name(std::move(name));
 	}
 
+	// `gl_VertexID` / `gl_VertexIndex` are `int` builtins, but ReShade FX
+	// authors often type `SV_VERTEXID` inputs as `uint`. Desktop GLSL
+	// accepts the implicit conversion; GLES compilers (ANGLE, Mali)
+	// reject it with S0001. Emit an explicit `uint(...)` cast whenever
+	// the destination type is unsigned.
+	std::string semantic_builtin_input_rvalue(const type &param_type, std::string name,
+		const std::string &semantic, shader_type stype) const
+	{
+		std::string expr = semantic_to_builtin(std::move(name), semantic, stype);
+		if (semantic == "SV_VERTEXID" && param_type.is_unsigned())
+		{
+			if (expr == "gl_VertexID" || expr == "gl_VertexIndex")
+				return "uint(" + expr + ")";
+		}
+		return expr;
+	}
+
 	static void increase_indentation_level(std::string &block)
 	{
 		if (block.empty())
@@ -1227,7 +1244,7 @@ protected:
 									code += '(';
 								}
 
-								code += semantic_to_builtin(std::move(in_param_name), member.semantic, func.type);
+								code += semantic_builtin_input_rvalue(member.type, std::move(in_param_name), member.semantic, func.type);
 
 								if (member.type.is_boolean())
 									code += ')';
@@ -1319,7 +1336,7 @@ protected:
 						code += '(';
 					}
 
-					code += semantic_to_builtin("_in_" + id_to_name(param.id), param.semantic, func.type);
+					code += semantic_builtin_input_rvalue(param.type, "_in_" + id_to_name(param.id), param.semantic, func.type);
 
 					if (param.type.is_boolean())
 						code += ')';

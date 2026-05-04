@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sbro.emucorex.R
+import com.sbro.emucorex.core.NativeApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -178,6 +179,7 @@ internal fun ReShadePane(
                     ReShadePresetParser.serializePreset(lp.preset, buildOverrides(lp, edits))
                 }
                 ReShadeStorage.applyMasterSwitch(context, newValue, text)
+                runCatching { NativeApp.reloadReShadePreset() }
                 Toast.makeText(context, if (newValue) masterOn else masterOff, Toast.LENGTH_SHORT).show()
             }
         )
@@ -319,6 +321,9 @@ internal fun ReShadePane(
                                     loaded = merged
                                     edits.clear()
                                     dirty = false
+                                    // Ask the native ReShade chain to re-read the preset on the
+                                    // GS thread so the new parameters take effect this frame.
+                                    runCatching { NativeApp.reloadReShadePreset() }
                                     true
                                 }.getOrElse { false }
                             }

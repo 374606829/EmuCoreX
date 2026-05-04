@@ -106,6 +106,8 @@ public:
 	bool IsMaskEnable() { return m_depth_mask != GL_FALSE; }
 };
 
+namespace ReShade { class ChainGL; }
+
 class GSDeviceOGL final : public GSDevice
 {
 public:
@@ -238,6 +240,13 @@ private:
 	std::string m_shader_tfx_vgs;
 	std::string m_shader_tfx_fs;
 
+	// ReShade-style post-processing chain ("最小MVP实施文档.md" §9). The
+	// chain is built lazily on the first BeginPresent() so the GL context
+	// is guaranteed to be current. Lives in std::unique_ptr to keep the
+	// header free of GL/SPIR-V type clutter.
+	std::unique_ptr<ReShade::ChainGL> m_reshade_chain;
+	bool m_reshade_chain_init_attempted = false;
+
 	bool CheckFeatures();
 
 	void SetSwapInterval();
@@ -305,6 +314,14 @@ public:
 	bool SupportsExclusiveFullscreen() const override;
 	void DestroySurface() override;
 	std::string GetDriverInfo() const override;
+
+	// Lazily constructs the ReShade chain on the first invocation. Safe
+	// to call from BeginPresent() every frame (becomes a cheap no-op once
+	// the chain has been wired up or deemed unsupported).
+	void EnsureReShadeChainInitialized();
+	// Tears the chain down so the next BeginPresent rebuilds it from
+	// scratch (used by the host when preset.ini changes on disk).
+	void ReloadReShadeChain();
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 

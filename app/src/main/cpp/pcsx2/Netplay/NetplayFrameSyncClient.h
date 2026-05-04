@@ -137,8 +137,18 @@ private:
 	uint64_t _initial_frame_id = 0;
 	uint64_t _frame_interval_us = 16667;
 	int _frame_cache_size = 100;
+	// 协议版本与 PC 端保持 0x0200，避免「Android 单方升级 → 跨端黑屏」回归
+	// （详见 优化.md §A 修订记录、§B.7 后置「跨端黑屏排错」段）。
+	// 0x000A (cheat RNG host 下行) 是新增的 msgType，与 wire 格式无关，PC 那侧的
+	// `if (msgType != 0x0001) return;` 会自然忽略它，不会崩；安卓↔安卓两端都有
+	// 0x000A handler 仍可享受 RNG 同步——即「同 wire / 能力软降级」。
 	int _protocol_version = 0x0200;
 	int _sync_delay = 0;
+
+	// 优化.md §B.7：当对端发送的 wire 协议版本号与本机不一致时，ParseBroadcastPacket
+	// 默认会无声丢包；这里只在第一次发生时打 logcat 警告，避免每帧上千 spam，又能让
+	// 「PC↔Android 单边升级 → 双方黑屏」的根因第一时间被发现。
+	std::atomic<bool> _version_mismatch_logged{false};
 
 	uint64_t _next_send_frame = 0;
 	uint64_t _last_broadcast_frame = 0;

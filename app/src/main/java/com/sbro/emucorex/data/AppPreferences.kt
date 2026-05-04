@@ -142,6 +142,7 @@ data class OverlayLayoutSnapshot(
     val leftStickSensitivity: Int = 100,
     val rightStickSensitivity: Int = 100,
     val stickSurfaceMode: Boolean = false,
+    val stickToDpadMode: Int = AppPreferences.DEFAULT_STICK_DPAD_MODE,
     val controlLayouts: Map<String, OverlayControlLayout> = AppPreferences.defaultOverlayControlLayouts()
 )
 
@@ -183,6 +184,15 @@ class AppPreferences(private val context: Context) {
         const val DEFAULT_STICK_SENSITIVITY = 100
         const val DEFAULT_GAMEPAD_STICK_DEADZONE = 15
         const val DEFAULT_GAMEPAD_STICK_SENSITIVITY = 100
+
+        // Touch left-stick → D-Pad mapping mode (matches 优化.md §C):
+        //  0 = Analog stick only (legacy default — emit LeftStick* keys only).
+        //  1 = D-Pad only (emit DPad keys based on 8-sector classification, no analog).
+        //  2 = Both (emit analog stick keys + mirror to D-Pad keys; aligns with PC mapping).
+        const val STICK_DPAD_MODE_STICK_ONLY = 0
+        const val STICK_DPAD_MODE_DPAD_ONLY = 1
+        const val STICK_DPAD_MODE_BOTH = 2
+        const val DEFAULT_STICK_DPAD_MODE = STICK_DPAD_MODE_BOTH
         const val COVER_ART_STYLE_DISABLED = -1
         const val COVER_ART_STYLE_DEFAULT = 0
         const val COVER_ART_STYLE_3D = 1
@@ -330,6 +340,7 @@ class AppPreferences(private val context: Context) {
         private val LEFT_STICK_SENSITIVITY = intPreferencesKey("left_stick_sensitivity")
         private val RIGHT_STICK_SENSITIVITY = intPreferencesKey("right_stick_sensitivity")
         private val STICK_SURFACE_MODE = booleanPreferencesKey("stick_surface_mode")
+        private val STICK_TO_DPAD_MODE = intPreferencesKey("stick_to_dpad_mode")
         private val CONTROL_LAYOUTS = stringPreferencesKey("control_layouts")
         private val OVERLAY_LAYOUT_VERSION = intPreferencesKey("overlay_layout_version")
     }
@@ -741,6 +752,7 @@ class AppPreferences(private val context: Context) {
                 leftStickSensitivity = prefs[LEFT_STICK_SENSITIVITY] ?: 100,
                 rightStickSensitivity = prefs[RIGHT_STICK_SENSITIVITY] ?: 100,
                 stickSurfaceMode = prefs[STICK_SURFACE_MODE] ?: false,
+                stickToDpadMode = normalizeStickToDpadMode(prefs[STICK_TO_DPAD_MODE]),
                 controlLayouts = decodeControlLayouts(prefs[CONTROL_LAYOUTS])
             )
         }
@@ -1721,6 +1733,23 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    val stickToDpadMode: Flow<Int> = context.dataStore.data.map { prefs ->
+        normalizeStickToDpadMode(prefs[STICK_TO_DPAD_MODE])
+    }
+
+    suspend fun setStickToDpadMode(mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[STICK_TO_DPAD_MODE] = normalizeStickToDpadMode(mode)
+        }
+    }
+
+    private fun normalizeStickToDpadMode(value: Int?): Int = when (value) {
+        STICK_DPAD_MODE_STICK_ONLY,
+        STICK_DPAD_MODE_DPAD_ONLY,
+        STICK_DPAD_MODE_BOTH -> value
+        else -> DEFAULT_STICK_DPAD_MODE
+    }
+
     suspend fun setControlsLayout(
         dpadX: Float, dpadY: Float,
         lstickX: Float, lstickY: Float,
@@ -1759,6 +1788,7 @@ class AppPreferences(private val context: Context) {
             prefs.remove(LEFT_STICK_SENSITIVITY)
             prefs.remove(RIGHT_STICK_SENSITIVITY)
             prefs.remove(STICK_SURFACE_MODE)
+            prefs.remove(STICK_TO_DPAD_MODE)
             prefs.remove(CONTROL_LAYOUTS)
             prefs[OVERLAY_LAYOUT_VERSION] = CURRENT_OVERLAY_LAYOUT_VERSION
         }
@@ -1958,6 +1988,7 @@ class AppPreferences(private val context: Context) {
             put("leftStickSensitivity", prefs[LEFT_STICK_SENSITIVITY] ?: 100)
             put("rightStickSensitivity", prefs[RIGHT_STICK_SENSITIVITY] ?: 100)
             put("stickSurfaceMode", prefs[STICK_SURFACE_MODE] ?: false)
+            put("stickToDpadMode", prefs[STICK_TO_DPAD_MODE] ?: DEFAULT_STICK_DPAD_MODE)
             put("controlLayouts", prefs[CONTROL_LAYOUTS])
             put("memoryCardSlot1", prefs[MEMORY_CARD_SLOT1])
             put("memoryCardSlot2", prefs[MEMORY_CARD_SLOT2])
@@ -2092,6 +2123,9 @@ class AppPreferences(private val context: Context) {
             prefs[LEFT_STICK_SENSITIVITY] = json.optInt("leftStickSensitivity", 100).coerceIn(50, 200)
             prefs[RIGHT_STICK_SENSITIVITY] = json.optInt("rightStickSensitivity", 100).coerceIn(50, 200)
             prefs[STICK_SURFACE_MODE] = json.optBoolean("stickSurfaceMode", false)
+            prefs[STICK_TO_DPAD_MODE] = normalizeStickToDpadMode(
+                json.optInt("stickToDpadMode", DEFAULT_STICK_DPAD_MODE)
+            )
             json.optString("controlLayouts").takeIf { it.isNotBlank() }?.let { prefs[CONTROL_LAYOUTS] = it } ?: prefs.remove(CONTROL_LAYOUTS)
             json.optString("memoryCardSlot1").takeIf { it.isNotBlank() }?.let { prefs[MEMORY_CARD_SLOT1] = it } ?: prefs.remove(MEMORY_CARD_SLOT1)
             json.optString("memoryCardSlot2").takeIf { it.isNotBlank() }?.let { prefs[MEMORY_CARD_SLOT2] = it } ?: prefs.remove(MEMORY_CARD_SLOT2)

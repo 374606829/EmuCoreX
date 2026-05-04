@@ -64,6 +64,7 @@ sealed class LanNetplayUiState {
         val expectedCrcHex: String,
         val serial: String,
         val hostHadCheats: Boolean,
+        val fairPlayNetplay: Boolean,
         val cheatFiles: List<CheatFileEntry>,
     ) : LanNetplayUiState()
 
@@ -92,6 +93,7 @@ sealed class LanNetplayEvent {
         val expectedCrcHex: String,
         val serial: String,
         val hostHadCheats: Boolean,
+        val fairPlayNetplay: Boolean,
         val cheatFiles: List<CheatFileEntry>,
     ) : LanNetplayEvent()
     /** 帧同步通道就绪，可跳转 EmulationRoute 启动 VM。 */

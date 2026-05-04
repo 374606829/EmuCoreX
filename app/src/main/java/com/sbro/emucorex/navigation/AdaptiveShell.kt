@@ -1,8 +1,11 @@
 package com.sbro.emucorex.navigation
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -62,6 +65,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -73,6 +77,9 @@ import kotlinx.coroutines.launch
 enum class PrimaryDestination {
     Home, Search, Textures, Netplay, Formats, Achievements, Settings
 }
+
+private const val SHELL_INTRO_HUB_URL = "https://ps2secimg.cn/"
+private const val SHELL_INTRO_SOURCE_REPO_URL = "https://github.com/sashkinbro/EmuCoreX"
 
 private enum class MobileLeadingAction {
     Drawer,
@@ -452,6 +459,12 @@ private fun SideNavigation(
     }
 
     val content: @Composable () -> Unit = {
+        val context = LocalContext.current
+        fun openExternalUrl(url: String) {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+        }
         Column(
             modifier = Modifier
                 .fillMaxHeight()
@@ -476,6 +489,28 @@ private fun SideNavigation(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp)
             )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Text(
+                        text = stringResource(R.string.shell_quick_actions_intro_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { openExternalUrl(SHELL_INTRO_HUB_URL) }
+                    )
+                    Text(
+                        text = stringResource(R.string.shell_quick_actions_intro_body),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .padding(top = 4.dp)
+                            .clickable { openExternalUrl(SHELL_INTRO_SOURCE_REPO_URL) }
+                    )
+                }
+            }
             ShellItem(
                 icon = Icons.Rounded.Home,
                 label = stringResource(R.string.shell_library),

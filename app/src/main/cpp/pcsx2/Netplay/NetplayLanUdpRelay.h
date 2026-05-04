@@ -40,6 +40,8 @@ private:
 	std::mutex m_injected_mutex;
 	std::vector<InjectedPacket> m_injected_packets;
 	unsigned short m_port = 0;
+	// 与 NetplayFrameSyncClient::_protocol_version 默认值同步，回退到 0x0200
+	// 以保留与 PC 跨端的 wire 兼容（详见 优化.md §A 修订记录与 §B.7 跨端黑屏排错）。
 	int m_protocol_version = 0x0200;
 	std::string m_room_id = "LAN";
 	np_socket_t m_sock = NP_INVALID_SOCKET;

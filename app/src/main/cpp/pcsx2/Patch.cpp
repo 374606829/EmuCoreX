@@ -43,10 +43,20 @@ namespace Patch
 	struct PointerChainExpr
 	{
 		std::string prefix;          // '(' 之前的字符
-		std::string suffix;          // ')' 之后的字符
+		std::string suffix;          // ')' 之后的字符（仅地址链使用，会被当作 hex 串拼接到结果上；
+		                             // 值链 + 算术偏移路径下保持为空，由 has_arith_offset/arith_* 表达）
 		u32 base = 0;                // '(' 内第一个十六进制段
 		std::vector<u32> offsets;    // '+' 分隔的剩余十六进制段
 		bool is_value_chain = false; // §12.1.2：true → 值链；false → 地址链
+
+		// 优化.md §12.3：值链常量算术偏移 — `(chain)+N` / `(chain)-N`
+		// 仅 is_value_chain==true 时允许。N 同时被解析为 int64（适用整型/EXTENDED_T）
+		// 和 double（适用 FLOAT_T）；选择哪一种由 ApplyPatch 按 patch_data_type 决定。
+		// 设计意图：让 pnach 直接表达"读取指针链的值再 +1 写回"，无需借助 EXTENDED_T 的 +Y 增量码或脚本。
+		bool has_arith_offset = false;
+		bool arith_is_decimal = false; // 用户书写的 N 是否含小数点；用于 ApplyPatch 在非 FLOAT 类型上拒绝小数偏移
+		int64_t arith_offset_int = 0;
+		double arith_offset_float = 0.0;
 	};
 
 	template <typename EnumType, class ArrayType>
@@ -234,7 +244,8 @@ std::unique_ptr<Patch::PointerChainExpr> Patch::ParsePointerExpr(const std::stri
 
 	auto expr = std::make_unique<PointerChainExpr>();
 	expr->prefix = std::string(slot.substr(0, lp));
-	expr->suffix = std::string(slot.substr(rp + 1));
+	std::string after = std::string(slot.substr(rp + 1));
+	expr->suffix = after; // 暂存，下面会按需重写为算术偏移分支
 
 	const std::string_view inner = slot.substr(lp + 1, rp - lp - 1);
 	const std::vector<std::string_view> segs(StringUtil::SplitString(inner, '+', false));
@@ -278,6 +289,69 @@ std::unique_ptr<Patch::PointerChainExpr> Patch::ParsePointerExpr(const std::stri
 	{
 		expr->is_value_chain = true;
 	}
+
+	// 优化.md §12.3：值链常量算术偏移 `(chain)+N` / `(chain)-N`。
+	// 仅在值链上允许（地址链结果是地址，做算术无意义）。识别条件：
+	//   - is_value_chain == true
+	//   - suffix 紧随 ')' 的第一个字符为 '+' 或 '-'
+	//   - 之后为合法十进制数字（可含小数点）
+	// 对应的 ApplyPatch 逻辑会按 patch_data_type 选择走 int64 还是 double。
+	if (expr->is_value_chain && !after.empty() && (after[0] == '+' || after[0] == '-'))
+	{
+		std::string_view tail(after);
+		while (!tail.empty() && (tail.back() == ' ' || tail.back() == '\t'))
+			tail.remove_suffix(1);
+
+		const bool negative = (tail[0] == '-');
+		std::string_view num = tail.substr(1);
+		bool seen_digit = false;
+		bool seen_dot = false;
+		bool malformed = num.empty();
+		for (char c : num)
+		{
+			if (c >= '0' && c <= '9')
+			{
+				seen_digit = true;
+			}
+			else if (c == '.' && !seen_dot)
+			{
+				seen_dot = true;
+			}
+			else
+			{
+				malformed = true;
+				break;
+			}
+		}
+		if (!seen_digit)
+			malformed = true;
+
+		if (!malformed)
+		{
+			std::string_view fend;
+			const auto dval = StringUtil::FromChars<double>(num, &fend);
+			if (dval.has_value() && fend.empty())
+			{
+				expr->has_arith_offset = true;
+				expr->arith_is_decimal = seen_dot;
+				expr->arith_offset_float = negative ? -dval.value() : dval.value();
+				if (!seen_dot)
+				{
+					const auto ival = StringUtil::FromChars<int64_t>(num, 10);
+					if (ival.has_value())
+						expr->arith_offset_int = negative ? -ival.value() : ival.value();
+					else
+						expr->arith_offset_int = static_cast<int64_t>(expr->arith_offset_float);
+				}
+				else
+				{
+					expr->arith_offset_int = static_cast<int64_t>(expr->arith_offset_float);
+				}
+				expr->suffix.clear(); // 算术偏移分支下，suffix 不再参与旧的 hex 拼接路径
+			}
+		}
+	}
+
 	return expr;
 }
 
@@ -1162,6 +1236,18 @@ void Patch::ReloadPatches(const std::string& serial, u32 crc, bool reload_files,
 	UpdateActivePatches(reload_enabled_list, verbose, verbose_if_changed, false);
 }
 
+static bool s_lan_fair_play_disable_disk_cheats = false;
+
+void Patch::SetFairPlayLanDisableDiskCheats(bool disable)
+{
+	s_lan_fair_play_disable_disk_cheats = disable;
+}
+
+bool Patch::GetFairPlayLanDisableDiskCheats()
+{
+	return s_lan_fair_play_disable_disk_cheats;
+}
+
 void Patch::UpdateActivePatches(bool reload_enabled_list, bool verbose, bool verbose_if_changed, bool apply_new_patches)
 {
 	if (reload_enabled_list)
@@ -1198,7 +1284,8 @@ void Patch::UpdateActivePatches(bool reload_enabled_list, bool verbose, bool ver
 	s_active_patches.emplace_back(nullptr);
 
 	u32 c_count = 0;
-	if (EmuConfig.EnableCheats)
+	const bool cheats_disk_allowed = EmuConfig.EnableCheats && !GetFairPlayLanDisableDiskCheats();
+	if (cheats_disk_allowed)
 		c_count = EnablePatches(
 			&s_cheat_patches, s_enabled_cheats, apply_new_patches ? &s_just_enabled_cheats : nullptr);
 	s_cheats_counts = c_count;
@@ -1464,6 +1551,25 @@ void Patch::PatchFunc::patch(PatchGroup* group, const std::string_view cmd, cons
 	else
 	{
 		ptr_data_expr = ParsePointerExpr(value_field);
+		if (ptr_data_expr && ptr_data_expr->has_arith_offset)
+		{
+			// 优化.md §12.3：值链算术偏移
+			// 仅 FLOAT_T 接受小数偏移；BYTES_T 不接受任何 (chain)+N（写入是变长字节数组，
+			// "加一个数"没有明确含义）；其它整型 (BYTE/SHORT/WORD/DOUBLE/EXTENDED/...) 仅接受整数偏移。
+			if (type.value() == BYTES_T)
+			{
+				PATCH_ERROR("Pointer-chain arithmetic offset '(chain)+N' is not supported for type 'bytes' in '{}'",
+					value_field);
+				return;
+			}
+			if (ptr_data_expr->arith_is_decimal && type.value() != FLOAT_T)
+			{
+				PATCH_ERROR("Pointer-chain arithmetic offset '(chain)+N.M' with decimal point requires "
+					"operand type 'float', not '{}' (offset='{}')",
+					pieces[3], ptr_data_expr->arith_offset_float);
+				return;
+			}
+		}
 	}
 
 	if (!is_random && !is_rand_float && !ptr_data_expr)
@@ -2450,7 +2556,32 @@ void Patch::ApplyPatch(const PatchCommand* p, EEMemory& ee, IOPMemory& iop, Exte
 	{
 		if (p->ptr_data->is_value_chain)
 		{
-			effective_data = ResolveValuePointerChain(*p->ptr_data, chain_mem);
+			const u32 raw = ResolveValuePointerChain(*p->ptr_data, chain_mem);
+			if (p->ptr_data->has_arith_offset)
+			{
+				// 优化.md §12.3：值链常量算术偏移。
+				// FLOAT_T  → 把 raw 当 IEEE-754 32 位 float，加上 arith_offset_float，再转回 bits。
+				// 其它整型 → 64 位补码加，截断到目标位宽由后续 case 分支负责。
+				// EXTENDED_T 也走整数加，因为 handle_extended_t 期望的就是 32 位 data。
+				if (p->type == FLOAT_T)
+				{
+					float fv;
+					std::memcpy(&fv, &raw, sizeof(fv));
+					fv = fv + static_cast<float>(p->ptr_data->arith_offset_float);
+					u32 bits;
+					std::memcpy(&bits, &fv, sizeof(bits));
+					effective_data = bits;
+				}
+				else
+				{
+					const int64_t signed_raw = static_cast<int64_t>(static_cast<int32_t>(raw));
+					effective_data = static_cast<u64>(signed_raw + p->ptr_data->arith_offset_int);
+				}
+			}
+			else
+			{
+				effective_data = raw;
+			}
 		}
 		else
 		{
@@ -2463,9 +2594,9 @@ void Patch::ApplyPatch(const PatchCommand* p, EEMemory& ee, IOPMemory& iop, Exte
 
 	if (p->is_rand_float || p->is_random)
 	{
-		static thread_local std::mt19937_64 s_rng(std::random_device{}());
 		if (p->is_rand_float)
 		{
+			static thread_local std::mt19937_64 s_rng(std::random_device{}());
 			int lo_t = static_cast<int>(std::lround(static_cast<double>(p->rand_float_lo) * 10.0));
 			int hi_t = static_cast<int>(std::lround(static_cast<double>(p->rand_float_hi) * 10.0));
 			if (lo_t > hi_t)
@@ -2478,6 +2609,7 @@ void Patch::ApplyPatch(const PatchCommand* p, EEMemory& ee, IOPMemory& iop, Exte
 		}
 		else
 		{
+			static thread_local std::mt19937_64 s_rng(std::random_device{}());
 			std::uniform_int_distribution<u64> dist(p->rand_lo, p->rand_hi);
 			effective_data = dist(s_rng);
 		}

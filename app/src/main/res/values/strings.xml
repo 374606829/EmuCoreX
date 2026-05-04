@@ -102,6 +102,9 @@
     <string name="emulation_saved">Saved</string>
     <string name="emulation_loaded">Loaded</string>
     <string name="emulation_load_failed">Failed to load save state.</string>
+    <string name="emulation_lan_netplay_savestates_locked">Save/load states are disabled while Fair LAN is enabled.</string>
+    <string name="emulation_lan_netplay_turbo_locked">Uncapped speed (frame limiter off) is disabled while Fair LAN is enabled.</string>
+    <string name="emulation_lan_netplay_resume_blocked">Save-state resume is disabled while Fair LAN is enabled; booting from disc.</string>
     <string name="emulation_fps">FPS: %s</string>
     <string name="emulation_bios_missing">Add a BIOS file first.</string>
     <string name="emulation_launch_failed">Unable to open this game.</string>
@@ -384,6 +387,7 @@
     <string name="settings_help_overlay_scale">Changes the size of on-screen buttons and sticks. Increase it if touch accuracy matters more than screen space; lower it if the overlay covers too much of the image.</string>
     <string name="settings_help_overlay_opacity">Controls how solid or transparent the touch controls look. Lower opacity keeps the game view cleaner, while higher opacity makes buttons easier to see in dark or busy scenes.</string>
     <string name="settings_help_left_stick_sensitivity">Adjusts how quickly the left touch stick reaches stronger movement input. Higher values react faster, while lower values make small movement corrections easier.</string>
+    <string name="settings_help_left_stick_dpad_mode">Decides how diagonal drags on the on-screen left stick are reported. The D-Pad option matches games that read only the digital cross, while the mirrored option also keeps the analog axis active for full PC-style coverage.</string>
     <string name="settings_help_right_stick_sensitivity">Adjusts how quickly the right touch stick reaches stronger input. Higher values make camera or aim changes react faster, while lower values give you finer control.</string>
     <string name="settings_help_gamepad_stick_deadzone">Ignores small physical stick movements near the center. Raise it if your controller drifts on its own; keep it lower if you want faster response around center.</string>
     <string name="settings_help_gamepad_left_stick_sensitivity">Adjusts how strongly the physical left stick responds after deadzone processing. Higher values reach full movement faster, while lower values make fine movement easier.</string>
@@ -452,6 +456,8 @@
     <string name="emulation_hide_fps">Hide FPS</string>
     <string name="shell_setup">Setup</string>
     <string name="shell_quick_actions">Quick actions</string>
+    <string name="shell_quick_actions_intro_title">PS2SECHUB</string>
+    <string name="shell_quick_actions_intro_body">本模拟器来源https://github.com/sashkinbro/EmuCoreX， 二改作者b站搜:你的同宇，本产品完全免费，若您是付费得到的请主动退款。</string>
     <string name="shell_executables_section">Executable Files</string>
     <string name="shell_launch_game">Launch Game</string>
     <string name="shell_app_section">Application</string>
@@ -470,6 +476,10 @@
     <string name="settings_overlay_scale">Overlay Scale</string>
     <string name="settings_overlay_opacity">Overlay Opacity</string>
     <string name="settings_left_stick_sensitivity">Left Stick Sensitivity</string>
+    <string name="settings_left_stick_dpad_mode">Left Stick → D-Pad</string>
+    <string name="settings_left_stick_dpad_mode_stick_only">Analog only</string>
+    <string name="settings_left_stick_dpad_mode_dpad_only">D-Pad only</string>
+    <string name="settings_left_stick_dpad_mode_both">D-Pad + Analog</string>
     <string name="settings_right_stick_sensitivity">Right Stick Sensitivity</string>
     <string name="settings_touch_controls_section">Touch Controls</string>
     <string name="settings_gamepad_controls_section">Physical Gamepad</string>
@@ -632,6 +642,11 @@
     <string name="emulation_cheats_title">Cheats</string>
     <string name="emulation_cheats_open_button">Cheats</string>
     <string name="emulation_cheats_empty">No cheats were found for this game.</string>
+    <string name="emulation_edit_cheats">Edit cheats</string>
+    <string name="emulation_edit_cheats_dialog_title">Edit cheat patch (.pnach)</string>
+    <string name="emulation_edit_cheats_saved">Cheat patch saved and reloaded.</string>
+    <string name="emulation_edit_cheats_failed">Could not save cheat patch.</string>
+    <string name="emulation_edit_cheats_no_vm">Start or resume the game before editing cheats.</string>
     <string name="settings_bilinear_filtering_nearest">Nearest</string>
     <string name="settings_bilinear_filtering_forced">Bilinear Forced</string>
     <string name="settings_bilinear_filtering_ps2">Bilinear PS2</string>

@@ -292,7 +292,22 @@ void NetplayLanUdpRelay::ThreadMain()
 	bool any_packet_seen = false;
 	bool remote_peer_seen = false;
 	bool reachability_warn_emitted = false;
+	bool version_mismatch_logged = false;
 	uint64_t broadcast_count = 0;
+
+	// 优化.md §B.9 跨端 FrameSync 黑屏排查诊断：
+	// 当前已知 PC↔Android 双方都同时停在 OnVSync WaitForFrame(0)、relay 看见对端 IP 但
+	// 永远不广播合并帧。我们必须暴露 relay 内部状态，否则只看 "saw first REMOTE peer" 这条
+	// 单行日志，无法区分以下三种致命场景：
+	//   (i)   远端只发了 0x0003 心跳，0x0001 输入帧根本没进 relay（NAT/防火墙/丢包/反向 socket 不可达）
+	//   (ii)  远端 0x0001 进了 relay 但和本端 frame_id=0 错位（state.initial_frame_id 不对齐）
+	//   (iii) 双端 0x0001 都到 pending[0] 了，但 BuildBroadcastInner / BuildFullPacket 失败
+	// 三种情况调试方向完全不同，仅靠现有日志会陷入猜测。
+	std::map<std::pair<std::string, uint16_t>, uint32_t> first_seen_msgtype; // (sender_ip:port, msgType) -> hits
+	std::map<std::string, uint32_t> rx_msgtype_count; // "0x0001" / "0x0003" / "other" -> count
+	std::map<uint64_t, bool> pending_logged; // frame_id -> 已经记录过 "missing" 警告
+	uint64_t last_summary_ms = NowMs();
+	uint32_t input_frames_received = 0;
 
 	auto process_packet = [&](const uint8_t* data, int n, const std::string& sender_ip, unsigned short sender_port) {
 		if (!any_packet_seen)
@@ -319,13 +334,57 @@ void NetplayLanUdpRelay::ThreadMain()
 		if (!ParseOuter(data, n, msgType, proto, room, player, inner, crc))
 			return;
 		if (proto != static_cast<uint16_t>(m_protocol_version))
+		{
+			// 优化.md §B.7：不要静默丢——这是历史上「双方黑屏，relay 看似收到包却
+			// 永远不广播合并帧」的标志。只在第一次发生时打印（防 spam，每秒数十包）。
+			if (!version_mismatch_logged)
+			{
+				version_mismatch_logged = true;
+				Console.Warning(
+					"NETPLAY LAN: UDP relay DROPPING packet from %s:%u: peer protocol_version=0x%04X "
+					"but local relay expects 0x%04X. Both sides must run matching builds; bumping only "
+					"one side will cause symmetrical lockstep timeout.",
+					sender_ip.c_str(), static_cast<unsigned>(sender_port),
+					static_cast<unsigned>(proto), static_cast<unsigned>(m_protocol_version));
+			}
 			return;
+		}
 		if (!room.empty() && room != m_room_id)
 			return;
 
 		if (CalcCrc32(inner.data(), inner.size()) != crc)
 			return;
 
+		// 优化.md §B.9：到这里说明 magic/proto/CRC/room 全部通过。打印每对
+		//   (sender_ip:port, msgType)
+		// 的首包，便于看到 "PC 收到 Android 0x0001 但完全收不到自己 0x0001" 这类不对称
+		// 路径问题。也按 msgType 累计计数，5 秒打一次摘要。
+		const std::string sender_key = sender_ip + ":" + std::to_string(sender_port);
+		auto fs_key = std::make_pair(sender_key, msgType);
+		auto fs_it = first_seen_msgtype.find(fs_key);
+		if (fs_it == first_seen_msgtype.end())
+		{
+			first_seen_msgtype[fs_key] = 1;
+			Console.WriteLn(
+				"NETPLAY LAN: UDP relay first-seen msgType=0x%04X from %s player='%s' room='%s' (n=%d).",
+				static_cast<unsigned>(msgType), sender_key.c_str(), player.c_str(), room.c_str(), n);
+		}
+		else
+		{
+			fs_it->second++;
+		}
+		switch (msgType)
+		{
+			case 0x0001: rx_msgtype_count["0x0001"]++; break;
+			case 0x0003: rx_msgtype_count["0x0003"]++; break;
+			case 0x000A: rx_msgtype_count["0x000A"]++; break;
+			default: rx_msgtype_count["other"]++; break;
+		}
+
+		// 优化.md §A 已废弃：联机金手指随机值同步方案不再启用，因此 relay 不再转发
+		// 0x000A 类型的包。任何非 0x0001（input frame）类型在这里直接 return，与之前
+		// 0x0003 心跳一样不参与合并广播。0x000A 若仍出现在网络上（旧版 client），会被
+		// 当作 "other" 计数后丢弃。
 		if (msgType != 0x0001)
 			return;
 
@@ -344,10 +403,39 @@ void NetplayLanUdpRelay::ThreadMain()
 		std::lock_guard<std::mutex> lk(pending_mu);
 		peers[player] = addr;
 		pending[frame_id][player] = std::move(samples);
+		++input_frames_received;
 
 		auto& fm = pending[frame_id];
 		if (fm.size() < 2)
+		{
+			// 优化.md §B.9：仅对前 5 帧的"只有一个玩家在 pending、对端迟到"事件打首次警告。
+			// 这正是黑屏卡死的真正信号——如果 frame_id=0 一直只看到 H:xxx 而看不到 G:xxx，
+			// 说明 guest 的 0x0001 根本没进 relay（即便心跳通了也不算数）。
+			if (frame_id < 5 && pending_logged.find(frame_id) == pending_logged.end())
+			{
+				pending_logged[frame_id] = true;
+				std::string have;
+				for (const auto& kv : fm)
+				{
+					if (!have.empty())
+						have += ",";
+					have += kv.first;
+				}
+				std::string known_peers;
+				for (const auto& kv : peers)
+				{
+					if (!known_peers.empty())
+						known_peers += ",";
+					known_peers += kv.first;
+				}
+				Console.WriteLn(
+					"NETPLAY LAN: UDP relay pending[frame=%llu] only %u of >=2 inputs ready: have=[%s] known_peers=[%s] "
+					"(等不到对端的 0x0001 input frame；若长时间停在这条说明对端只发心跳/输入帧丢失)。",
+					static_cast<unsigned long long>(frame_id), static_cast<unsigned>(fm.size()),
+					have.c_str(), known_peers.c_str());
+			}
 			return;
+		}
 
 		std::vector<uint8_t> inner_bc;
 		if (!BuildBroadcastInner(m_room_id, frame_id, NowMs(), fm, inner_bc))
@@ -407,6 +495,38 @@ void NetplayLanUdpRelay::ThreadMain()
 			}
 			for (const InjectedPacket& packet : injected)
 				process_packet(packet.data.data(), static_cast<int>(packet.data.size()), "127.0.0.1", 0);
+		}
+
+		// 优化.md §B.9：每 5s 打一次 relay 内部状态摘要，便于跨端黑屏问题对账。
+		// 关注以下三组数字：
+		//   RX(0x0001) ：本端 relay 一共收到多少输入帧。两端都 ≥1 才有可能合并广播。
+		//   peers      ：H:/G: 前缀的 player_id 列表，确认双方身份未冲撞。
+		//   broadcast  ：合并并广播的次数；只要双端都正常发 0x0001，应该秒级递增。
+		const uint64_t now_ms = NowMs();
+		if (now_ms - last_summary_ms >= 5000)
+		{
+			last_summary_ms = now_ms;
+			std::string counts;
+			for (const auto& kv : rx_msgtype_count)
+			{
+				if (!counts.empty())
+					counts += ",";
+				counts += kv.first + "=" + std::to_string(kv.second);
+			}
+			std::string peer_list;
+			{
+				std::lock_guard<std::mutex> lk(pending_mu);
+				for (const auto& kv : peers)
+				{
+					if (!peer_list.empty())
+						peer_list += ",";
+					peer_list += kv.first + "@" + kv.second.ip + ":" + std::to_string(kv.second.port);
+				}
+			}
+			Console.WriteLn(
+				"NETPLAY LAN: relay 5s summary: rx[%s] inputFrames=%u peers=[%s] broadcast=%llu",
+				counts.c_str(), static_cast<unsigned>(input_frames_received), peer_list.c_str(),
+				static_cast<unsigned long long>(broadcast_count));
 		}
 
 		std::string sender_ip;

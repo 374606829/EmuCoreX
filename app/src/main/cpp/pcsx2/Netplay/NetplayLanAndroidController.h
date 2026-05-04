@@ -47,6 +47,7 @@ struct ILanNetplayDialogCallback
     /// 成员：已收到 V3 会话数据，需要弹出 ISO 选择（验证 CRC 后调 ConfirmGuestReady）
     virtual void RequestGuestIsoSelection(uint32_t expectedCrc, const std::string& serial,
                                           bool hostHadCheats,
+                                          bool fairPlayNetplay,
                                           const std::vector<std::pair<std::string,std::string>>& cheatFiles) = 0;
 
     /// 已进入大厅（点击 Host/Connect 后立即切页）
@@ -54,6 +55,18 @@ struct ILanNetplayDialogCallback
 
     /// 最小化大厅窗口（房主发 PS2LAN_MINIMIZE_LOBBY）
     virtual void MinimizeLobby() = 0;
+
+    /// 联机握手 / 启动期检测到双端 EmulatorSyncState 不一致。
+    /// reason 取值（见 NetplayLanPlugin::CheckSyncStates 与 LanNetplayRepository.formatMismatchMessage）：
+    ///   "bios"      → BIOS 文件名不一致；
+    ///   "disc_id"   → 游戏序列号不一致；
+    ///   "skip_mpeg" → SkipMPEGHack 设置不一致；
+    ///   "game_crc"  → 镜像 CRC32 不一致（仅由 Kotlin 侧手动 ISO 选择路径触发）。
+    /// localValue / peerValue 为对应字段的人类可读值，已在 native 侧 trim 末尾 \0；
+    /// Kotlin 侧直接用作 Toast / Error 文案。
+    virtual void OnSyncMismatch(const std::string& reason,
+                                const std::string& localValue,
+                                const std::string& peerValue) = 0;
 };
 
 class NetplayLanAndroidController
@@ -98,8 +111,8 @@ public:
     /// 发送聊天消息
     void SendChat(const std::string& message);
 
-    /// 房主：点击 Start，选好 ISO 后调此接口
-    void HostConfirmStart(const std::string& isoPath, int inputDelay);
+    /// 房主：点击 Start，选好 ISO 后调此接口（fairPlayNetplay 仅房主有效）
+    void HostConfirmStart(const std::string& isoPath, int inputDelay, bool fairPlayNetplay);
 
     /// 成员：ISO 选好并 CRC 验证通过后调此接口（发 PS2LAN_ACK）
     void GuestConfirmReady(const std::string& isoPath, bool enableCheats);
@@ -114,6 +127,9 @@ public:
     bool IsHost() const;
     bool IsEnabled() const;
 
+    /// 运行中：将会话内当前游戏的 pnach 正文广播给对端（公平联机或未启用会话时不发送）。
+    void BroadcastRuntimeCheatPnachUtf8(const std::string& utf8);
+
     // ---- 协议消息处理（由 Plugin 聊天回调调用）----
     void OnLanProtocolMessage(const std::string& username, const std::string& message);
 
@@ -121,6 +137,13 @@ public:
     int WaitForConfirmation();    // 房主blocking等待 Start 确认，返回 inputDelay
     int GetInputDelay() const;
     std::vector<LanUserInfo> GetCachedUserlistSnapshot() const;
+
+    /// 写回最新的成员列表快照到 m_cachedUserlist。
+    /// 由 NetplayLanPlugin::HandleUsernames() 在每次推送给 UI 之前调用，
+    /// 用于在 ping_clients 周期偶发推送 partial userlist 时，让下次合并能用上一帧补齐。
+    /// 双安卓场景下若 Info 包到达顺序异常或部分包丢失，缓存可避免 UI 抖回到「空列表」。
+    void SetCachedUserlist(const std::vector<LanUserInfo>& users);
+
     void hostLaunchGameAfterLobby();  // 移至 public：Plugin 需直接调用
 
 private:
@@ -130,6 +153,7 @@ private:
     void onConnectionSettingsReady();
     void guestProcessV3Line(const std::string& message);
     void guestApplySessionPayload(const std::string& jsonStr);
+    void processRuntimeCheatChunkLine(const std::string& message);
 
     ILanNetplayDialogCallback* m_callback = nullptr;
     mutable std::mutex m_mutex;
@@ -149,6 +173,9 @@ private:
 
     // ---- 成员 V3 分片 ----
     std::vector<std::string> m_v3Chunks;
+    // ---- 运行中金手指 pnach 同步（PS2LAN_CH）----
+    std::mutex m_rtChMutex;
+    std::vector<std::string> m_rtChChunks;
     bool m_guestLanBootHandled = false;
     std::string m_preselectedIsoPath;
 

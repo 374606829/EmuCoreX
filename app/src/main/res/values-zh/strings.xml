@@ -75,6 +75,9 @@
     <string name="emulation_saved">已儲存</string>
     <string name="emulation_loaded">已載入</string>
     <string name="emulation_load_failed">無法載入即時存檔。</string>
+    <string name="emulation_lan_netplay_savestates_locked">已开启公平联机：即时存档读/写不可用。</string>
+    <string name="emulation_lan_netplay_turbo_locked">已开启公平联机：不可用解除帧限制（加速）。</string>
+    <string name="emulation_lan_netplay_resume_blocked">已开启公平联机：无法从即时存档恢复，将从光盘启动。</string>
     <string name="emulation_fps">FPS: %s</string>
     <string name="emulation_bios_missing">請先新增 BIOS 檔案。</string>
     <string name="emulation_launch_failed">無法開啟此遊戲。</string>
@@ -265,6 +268,8 @@
     <string name="emulation_hide_fps">隱藏 FPS</string>
     <string name="shell_setup">設定</string>
     <string name="shell_quick_actions">快速操作</string>
+    <string name="shell_quick_actions_intro_title">PS2SECHUB</string>
+    <string name="shell_quick_actions_intro_body">本模拟器来源https://github.com/sashkinbro/EmuCoreX， 二改作者b站搜:你的同宇，本产品完全免费，若您是付费得到的请主动退款。</string>
     <string name="shell_executables_section">可執行檔案</string>
     <string name="shell_launch_game">啟動遊戲</string>
     <string name="shell_app_section">應用程式</string>
@@ -424,6 +429,11 @@
     <string name="emulation_cheats_title">金手指</string>
     <string name="emulation_cheats_open_button">金手指</string>
     <string name="emulation_cheats_empty">找不到此遊戲的金手指。</string>
+    <string name="emulation_edit_cheats">编辑金手指</string>
+    <string name="emulation_edit_cheats_dialog_title">编辑金手指文件 (.pnach)</string>
+    <string name="emulation_edit_cheats_saved">金手指已保存并热重载。</string>
+    <string name="emulation_edit_cheats_failed">无法保存金手指文件。</string>
+    <string name="emulation_edit_cheats_no_vm">请先进入游戏后再编辑金手指。</string>
     <string name="settings_bilinear_filtering_nearest">最近相鄰</string>
     <string name="settings_bilinear_filtering_forced">強制雙線性</string>
     <string name="settings_bilinear_filtering_ps2">PS2 雙線性</string>
@@ -917,11 +927,16 @@
     <string name="settings_gamepad_mapping_player_disconnected">%1$s 控制器未连接。您仍然可以配置其映射。</string>
     <string name="settings_gamepad_mapping_listening_player_desc">按下 %1$s 的按钮以将其绑定到 %2$s。</string>
     <string name="settings_help_left_stick_sensitivity">调整左侧虚拟摇杆达到更强移动输入的快慢。较高的值反应更快，而较低的值使微小的移动修正更容易。</string>
+    <string name="settings_help_left_stick_dpad_mode">决定屏幕左摇杆斜向手势如何上报。仅 D-Pad 适合只读十字键的游戏；模拟+D-Pad 同时保留摇杆模拟量并镜像方向键，与 PC 键位范式一致。</string>
     <string name="settings_help_right_stick_sensitivity">调整右侧虚拟摇杆达到更强输入的快慢。较高的值可使相机或瞄准的改变反应更快，而较低的值可提供更精细的控制。</string>
     <string name="settings_help_gamepad_stick_deadzone">忽略中心附近轻微的物理摇杆移动。如果您的控制器会自动漂移，请调高此值；如果您希望在中心附近有更快的响应，请保持较低值。</string>
     <string name="settings_help_gamepad_left_stick_sensitivity">调整物理左摇杆在死区处理后响应的强度。较高的值会更快达到满量程移动，而较低的值使精细移动更容易。</string>
     <string name="settings_help_gamepad_right_stick_sensitivity">调整物理右摇杆在死区处理后响应的强度。较高的值会使相机或瞄准移动的反应更快，而较低的值可提供更精细的控制。</string>
     <string name="settings_left_stick_sensitivity">左摇杆灵敏度</string>
+    <string name="settings_left_stick_dpad_mode">左摇杆 → 方向键</string>
+    <string name="settings_left_stick_dpad_mode_stick_only">仅模拟摇杆</string>
+    <string name="settings_left_stick_dpad_mode_dpad_only">仅方向键</string>
+    <string name="settings_left_stick_dpad_mode_both">方向键 + 模拟</string>
     <string name="settings_right_stick_sensitivity">右摇杆灵敏度</string>
     <string name="settings_touch_controls_section">触屏控制</string>
     <string name="settings_gamepad_controls_section">物理手柄</string>

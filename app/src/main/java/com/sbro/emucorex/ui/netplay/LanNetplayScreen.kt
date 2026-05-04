@@ -93,6 +93,8 @@ fun LanNetplayScreen(
     var chatText by rememberSaveable { mutableStateOf("") }
     var pendingGuestCheats by remember { mutableStateOf<List<CheatFileEntry>>(emptyList()) }
     var pendingGuestEnableCheats by remember { mutableStateOf(false) }
+    var pendingGuestFairPlay by remember { mutableStateOf(false) }
+    var fairPlayLan by rememberSaveable { mutableStateOf(false) }
 
     fun persistReadPermission(uri: Uri) {
         runCatching {
@@ -108,7 +110,8 @@ fun LanNetplayScreen(
         persistReadPermission(uri)
         repository.hostConfirmStart(
             isoPath = uri.toString(),
-            inputDelay = inputDelayText.toIntOrNull()?.coerceAtLeast(1) ?: 1
+            inputDelay = inputDelayText.toIntOrNull()?.coerceAtLeast(1) ?: 1,
+            fairPlayNetplay = fairPlayLan,
         )
     }
 
@@ -117,8 +120,9 @@ fun LanNetplayScreen(
         persistReadPermission(uri)
         repository.guestConfirmReady(
             isoPath = uri.toString(),
-            enableCheats = pendingGuestEnableCheats,
-            cheatFiles = pendingGuestCheats
+            hostHadCheats = pendingGuestEnableCheats,
+            cheatFiles = pendingGuestCheats,
+            fairPlayNetplay = pendingGuestFairPlay,
         )
     }
 
@@ -130,6 +134,7 @@ fun LanNetplayScreen(
                     panel = NetplayPanel.Lobby
                     pendingGuestEnableCheats = event.hostHadCheats
                     pendingGuestCheats = event.cheatFiles
+                    pendingGuestFairPlay = event.fairPlayNetplay
                     guestIsoPicker.launch(arrayOf("*/*"))
                 }
                 is LanNetplayEvent.Error -> Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
@@ -192,6 +197,8 @@ fun LanNetplayScreen(
             NetplayPanel.Lobby -> LobbyPanel(
                 state = uiState,
                 isHostSettingsTab = selectedTab == 1,
+                fairPlayLan = fairPlayLan,
+                onFairPlayLanChange = { fairPlayLan = it },
                 inputDelayText = inputDelayText,
                 onInputDelayChange = { inputDelayText = it },
                 chatText = chatText,
@@ -207,6 +214,7 @@ fun LanNetplayScreen(
                 onGuestPickIso = { guestIsoPicker.launch(arrayOf("*/*")) },
                 onGuestCancelIso = repository::guestCancelReady,
                 onBackToSettings = {
+                    fairPlayLan = false
                     repository.endSession()
                     panel = NetplayPanel.Settings
                 }
@@ -389,6 +397,8 @@ private fun HostForm(
 private fun LobbyPanel(
     state: LanNetplayUiState,
     isHostSettingsTab: Boolean,
+    fairPlayLan: Boolean,
+    onFairPlayLanChange: (Boolean) -> Unit,
     inputDelayText: String,
     onInputDelayChange: (String) -> Unit,
     chatText: String,
@@ -427,6 +437,7 @@ private fun LobbyPanel(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                CheckRow("公平联机（本场禁用磁盘金手指，不对成员同步）", fairPlayLan, onFairPlayLanChange)
                 Button(onClick = onStart, enabled = canStart) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                     Text("Start", modifier = Modifier.padding(start = 8.dp))

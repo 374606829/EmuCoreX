@@ -50,8 +50,8 @@ object LanNetplayNative {
 
     fun onVmStopped() = NativeApp.lanOnVmStopped()
 
-    fun hostConfirmStart(isoPath: String, inputDelay: Int) =
-        NativeApp.lanHostConfirmStart(isoPath, inputDelay)
+    fun hostConfirmStart(isoPath: String, inputDelay: Int, fairPlayNetplay: Boolean = false) =
+        NativeApp.lanHostConfirmStart(isoPath, inputDelay, fairPlayNetplay)
 
     fun guestConfirmReady(isoPath: String, enableCheats: Boolean): Boolean =
         NativeApp.lanGuestConfirmReady(isoPath, enableCheats)
@@ -59,8 +59,15 @@ object LanNetplayNative {
     fun guestCancelReady() = NativeApp.lanGuestCancelReady()
 
     fun isEnabled(): Boolean = NativeApp.lanIsEnabled()
+
+    /** 公平联机勾选时为 true；未勾选时即时存档/解除帧限制等不被会话强行禁用。 */
+    fun fairPlayNetplay(): Boolean = NativeApp.lanFairPlayNetplay()
+
     fun isHost(): Boolean = NativeApp.lanIsHost()
     fun setInputDelay(delay: Int) = NativeApp.lanSetInputDelay(delay)
+
+    /** 运行中将会话内当前游戏的 pnach 正文广播给对端（非公平联机且会话启用时）。 */
+    fun broadcastRuntimeCheatPnach(text: String) = NativeApp.lanBroadcastRuntimeCheatPnach(text)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,7 +85,18 @@ interface NativeLanCallback {
     fun setUserlist(encodedList: String, numPlayers: Int)
     fun onConnectionEstablished(delay: Int)
     fun requestLaunchGame(gamePath: String, enableCheats: Boolean)
-    fun requestGuestIsoSelection(crcHex: String, serial: String, hostHadCheats: Boolean, cheatData: String)
+    fun requestGuestIsoSelection(crcHex: String, serial: String, hostHadCheats: Boolean, fairPlayNetplay: Boolean, cheatData: String)
     fun presentLobby()
     fun minimizeLobby()
+
+    /**
+     * 联机握手 / 启动期检测到双端 EmulatorSyncState 不一致。
+     * 由 NetplayLanPlugin::CheckSyncStates 通过 JNI bridge 上报；
+     * Kotlin 侧应弹 Toast 并把 UI 切到 [LanNetplayUiState.Error]，让用户明确为什么进不去房间。
+     *
+     * @param reason     "bios" / "disc_id" / "skip_mpeg" / "game_crc"
+     * @param localValue 本机字段值（例如 "scph10000.bin" / "SLUS-21184" / "B18E3F1C" / "on"）
+     * @param peerValue  对端字段值，含义同上
+     */
+    fun onSyncMismatch(reason: String, localValue: String, peerValue: String)
 }

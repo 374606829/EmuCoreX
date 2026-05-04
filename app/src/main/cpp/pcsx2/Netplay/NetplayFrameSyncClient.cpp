@@ -14,6 +14,7 @@
 #include "common/Console.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 
 NetplayFrameSyncClient* g_NetplayFrameSync = nullptr;
@@ -116,6 +117,11 @@ bool NetplayFrameSyncClient::Start(const NetplayRoomState& state)
 	NetplayHook::SetPadOverride(true);
 
 	_running.store(true);
+
+	// 优化.md §A 已废弃：联机模式下不再尝试同步金手指随机值。
+	// 含 randint/randfloat 的金手指在 Patch.cpp::ApplyPatch 处直接被双端拒绝执行，
+	// 因此 FrameSync 不再需要 0x000A msgType 通道，也不再持有 NetplayCheatRng 状态。
+
 	_recv_thread = std::thread([this]() { ReceiverLoop(); });
 	_send_thread = std::thread([this]() { SenderLoop(); });
 	SendHeartbeat();
@@ -385,7 +391,41 @@ bool NetplayFrameSyncClient::BuildAndSendPacket(uint16_t msgType, const std::vec
 		NetplayLanUdpRelay::InjectLoopbackPacket(buf.data(), static_cast<int>(buf.size()));
 	}
 
-	return NetplayUdpSocket::SendTo(_sock, _server_addr.c_str(), _server_port, buf.data(), (int)buf.size()) > 0;
+	const int sent = NetplayUdpSocket::SendTo(
+		_sock, _server_addr.c_str(), _server_port, buf.data(), (int)buf.size());
+
+	// 优化.md §B.9：跨端黑屏排查。
+	// 我们已经定位到双方都卡在 OnVSync WaitForFrame(0)，且 host 端 relay "saw first
+	// REMOTE peer" 但永远不广播合并帧。如果 guest 端 OnVSync 的 0x0001 input frame
+	// 在 sendto 这一层就已经返回 -1（EHOSTUNREACH / EPERM / 网络切换），我们之前是完全
+	// 静默的——只看 OnVSync "submitting first frame 0" 看不出包根本没出去。
+	// 这里给三类高价值消息打首发结果：0x0001 input、0x0003 心跳、0x000A 金手指 RNG。
+	// 仅每种 msgType 第一次 + 失败时打印，避免影响性能。
+	{
+		const bool is_failure = (sent <= 0);
+		const bool is_diagnostic_type = (msgType == 0x0001 || msgType == 0x0003 || msgType == 0x000A);
+		if (is_diagnostic_type)
+		{
+			static std::atomic<bool> s_first_logged_0x0001{false};
+			static std::atomic<bool> s_first_logged_0x0003{false};
+			static std::atomic<bool> s_first_logged_0x000A{false};
+			std::atomic<bool>* flag = (msgType == 0x0001) ? &s_first_logged_0x0001
+				: (msgType == 0x0003)                    ? &s_first_logged_0x0003
+														 : &s_first_logged_0x000A;
+			bool expected = false;
+			const bool fired_first = flag->compare_exchange_strong(expected, true);
+			if (fired_first || is_failure)
+			{
+				Console.WriteLn(
+					"NETPLAY: SendTo msgType=0x%04X dest=%s:%u bytes=%d returned=%d (is_host=%d)%s",
+					static_cast<unsigned>(msgType), _server_addr.c_str(),
+					static_cast<unsigned>(_server_port), (int)buf.size(), sent, _is_host ? 1 : 0,
+					is_failure ? " <-- FAILURE" : "");
+			}
+		}
+	}
+
+	return sent > 0;
 }
 
 bool NetplayFrameSyncClient::ParseBroadcastPacket(const uint8_t* data, int len)
@@ -408,7 +448,20 @@ bool NetplayFrameSyncClient::ParseBroadcastPacket(const uint8_t* data, int len)
 	uint16_t ver;
 	get16(ver);
 	if (ver != (uint16_t)_protocol_version)
+	{
+		// 优化.md §B.7：协议版本不一致以前是无声丢，导致 PC↔Android 单边升级时
+		// 两端都在 WaitForFrame 卡死却看不出原因。这里改为只第一次警告（避免每帧
+		// spam），把对端协议版本号直接打到 logcat。
+		if (!_version_mismatch_logged.exchange(true))
+		{
+			Console.Warning(
+				"NETPLAY: ParseBroadcastPacket dropping incoming packet: peer protocol_version=0x%04X "
+				"but local client expects 0x%04X. Lockstep WaitForFrame will hang until both sides "
+				"upgrade to a matching build (see 优化.md §B.7).",
+				static_cast<unsigned>(ver), static_cast<unsigned>(_protocol_version));
+		}
 		return false;
+	}
 
 	uint16_t msgType;
 	get16(msgType);
@@ -472,6 +525,14 @@ bool NetplayFrameSyncClient::ParseBroadcastPacket(const uint8_t* data, int len)
 					targetInterval, 1000000 / targetInterval, reasonStr, transFrames);
 			}
 		}
+		return true;
+	}
+
+	if (msgType == 0x000A)
+	{
+		// 优化.md §A 已废弃：联机金手指随机值同步方案不再启用。
+		// 仍然识别该 msgType 是为了向后兼容——若网络上出现来自旧版本的 0x000A 包，
+		// 这里静默丢弃即可，不再投递给业务层。返回 true 表示"已识别该消息类型"。
 		return true;
 	}
 
@@ -594,6 +655,21 @@ bool NetplayFrameSyncClient::ParseBroadcastPacket(const uint8_t* data, int len)
 	}
 	DetectAndRequestMissing(frameId);
 	_last_rx_ms = NowMs();
+
+	// 优化.md §B.9：第一次成功收到 0x0002 合并广播的诊断日志。
+	// 这是确认"对端 host relay 真的把合并帧广播出来 + 自己 UDP 收到 + CRC 通过"的最权威信号。
+	// 如果 OnVSync 一直在 WaitForFrame(0)、却**完全看不到这条日志**，说明问题在远端 relay
+	// (没合并/没广播) 或本地 socket 没收到。结合 relay 那侧的 5s 摘要可以直接断案。
+	{
+		static std::atomic<bool> s_first_broadcast_logged{false};
+		bool expected = false;
+		if (s_first_broadcast_logged.compare_exchange_strong(expected, true))
+		{
+			Console.WriteLn(
+				"NETPLAY: ParseBroadcastPacket received first 0x0002 frame=%llu groups=%u (lockstep should now unblock).",
+				static_cast<unsigned long long>(frameId), static_cast<unsigned>(groups));
+		}
+	}
 
 	// Wake up any thread waiting in WaitForFrame
 	_cv.notify_all();

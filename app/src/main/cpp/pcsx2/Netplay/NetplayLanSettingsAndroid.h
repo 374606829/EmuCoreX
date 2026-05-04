@@ -34,6 +34,8 @@ struct NetplayLanSettings
     bool ClientOnlyDelay = true;
     bool MemcardSync = true;
     unsigned int NumPlayers = 2;
+    /// 局域网联机「公平」模式（仅房主在大厅勾选）：本会话不向成员同步 cheats 目录金手指，且双方不加载磁盘金手指。
+    bool FairPlayNetplay = false;
 
     void SanityCheck()
     {

@@ -1,6 +1,7 @@
 package com.sbro.emucorex.netplay
 
 import android.content.Context
+import android.util.Log
 import com.sbro.emucorex.core.EmulatorBridge
 import com.sbro.emucorex.data.AppPreferences
 import com.sbro.emucorex.data.GameItem
@@ -32,6 +33,8 @@ import java.io.File
 class LanNetplayRepository private constructor(private val context: Context) : NativeLanCallback {
 
     companion object {
+        private const val TAG = "LanNetplayRepo"
+
         @Volatile
         private var _instance: LanNetplayRepository? = null
 
@@ -106,13 +109,13 @@ class LanNetplayRepository private constructor(private val context: Context) : N
     /**
      * 房主：已选好 ISO，确认启动。
      */
-    fun hostConfirmStart(isoPath: String, inputDelay: Int) {
+    fun hostConfirmStart(isoPath: String, inputDelay: Int, fairPlayNetplay: Boolean = false) {
         _uiState.update { state ->
             if (state is LanNetplayUiState.Lobby)
                 state.copy(statusText = "Waiting for guest to sync...")
             else state
         }
-        LanNetplayNative.hostConfirmStart(isoPath, inputDelay)
+        LanNetplayNative.hostConfirmStart(isoPath, inputDelay, fairPlayNetplay)
     }
 
     /**
@@ -124,21 +127,51 @@ class LanNetplayRepository private constructor(private val context: Context) : N
      * 发射 LaunchGame 事件，让 UI 从 GuestSelectIso / Lobby 切到 EmulationRoute，
      * 否则停在 "Starting game (guest)..." 永不前进。
      */
-    fun guestConfirmReady(isoPath: String, enableCheats: Boolean, cheatFiles: List<CheatFileEntry>) {
-        if (enableCheats && cheatFiles.isNotEmpty()) {
-            writeCheatFiles(cheatFiles)
-        }
-        _uiState.value = LanNetplayUiState.LaunchingGame(isoPath)
-        // 关键：LanNetplayNative.guestConfirmReady 内部会同步阻塞最多 ~6s 等待
-        // PC 房主把 PS2LAN_ACK 确认回来（避免"启动 VM 把 shoryu lobby 干掉"之前 ACK 丢失
-        // 导致 PC 黑屏）。因此必须把它调度到 IO 线程，绝不能占住 UI 主线程。
-        //
-        // 同理，真正的 LaunchGame 事件必须在 JNI 返回之后再发射——只有握手成功了才会
-        // 让 Kotlin 侧启动 VM；否则仍会启动，但产品状态已被 Native 端打印告警。
+    fun guestConfirmReady(
+        isoPath: String,
+        hostHadCheats: Boolean,
+        cheatFiles: List<CheatFileEntry>,
+        fairPlayNetplay: Boolean = false,
+    ) {
+        // 优化.md §B：手动 ISO 选择路径上补 CRC 校验。
+        // findMatchingLocalIso 在 GameLibrary 命中时已经过 CRC 比对，本路径只覆盖 picker
+        // 兜底——用户从 SAF 里挑了一个文件后，先与当前 GuestSelectIso 状态里的
+        // expectedCrcHex 做快速比对：CRC 不一致直接走 onSyncMismatch 等价路径，
+        // 既弹 Toast 也把 _uiState 切到 Error，并且不会发 PS2LAN_ACK 浪费房主的等待。
+        val expectedHex = (uiState.value as? LanNetplayUiState.GuestSelectIso)?.expectedCrcHex
         scope.launch(Dispatchers.IO) {
-            val acked = LanNetplayNative.guestConfirmReady(isoPath, enableCheats)
+            if (!expectedHex.isNullOrBlank()) {
+                val expected = normalizeCrcHex(expectedHex)
+                val pickedCrc = runCatching {
+                    val meta = EmulatorBridge.getGameMetadata(isoPath)
+                    extractCrcFromSerialWithCrc(meta.serialWithCrc)
+                }.getOrNull()
+                Log.d(TAG, "guestConfirmReady CRC validate expected=$expected picked=$pickedCrc")
+                if (expected != null && pickedCrc != null && expected != pickedCrc) {
+                    val message = "游戏镜像 CRC 不一致，无法启动联机。\n本机：$pickedCrc\n对端：$expected"
+                    _events.emit(LanNetplayEvent.Error(message))
+                    _uiState.value = LanNetplayUiState.Error(message)
+                    return@launch
+                }
+                // 注：picked 取不到（getGameMetadata 失败 / serialWithCrc 解析失败）时不
+                // 拦截——因为 SAF Uri 偶尔存在权限或元数据滞后问题，强行拦下会导致用户合法
+                // ISO 也进不去；此时仍由 host 侧的 PS2LAN_ACK 流程来兜底。
+            }
+
+            val vmCheatsEnabled = !fairPlayNetplay && hostHadCheats
+            if (vmCheatsEnabled && cheatFiles.isNotEmpty()) {
+                writeCheatFiles(cheatFiles)
+            }
+            _uiState.value = LanNetplayUiState.LaunchingGame(isoPath)
+            // 关键：LanNetplayNative.guestConfirmReady 内部会同步阻塞最多 ~6s 等待
+            // PC 房主把 PS2LAN_ACK 确认回来（避免"启动 VM 把 shoryu lobby 干掉"之前 ACK 丢失
+            // 导致 PC 黑屏）。因此必须把它调度到 IO 线程，绝不能占住 UI 主线程。
+            //
+            // 同理，真正的 LaunchGame 事件必须在 JNI 返回之后再发射——只有握手成功了才会
+            // 让 Kotlin 侧启动 VM；否则仍会启动，但产品状态已被 Native 端打印告警。
+            val acked = LanNetplayNative.guestConfirmReady(isoPath, vmCheatsEnabled)
             if (acked) {
-                _events.emit(LanNetplayEvent.LaunchGame(isoPath, enableCheats))
+                _events.emit(LanNetplayEvent.LaunchGame(isoPath, vmCheatsEnabled))
             } else {
                 _uiState.value = LanNetplayUiState.Error(
                     "PS2LAN_ACK 未被房主确认，已阻止启动游戏。请确认 PC 端已应用 ACK 修复并放行 UDP 7500/38889。"
@@ -190,6 +223,17 @@ class LanNetplayRepository private constructor(private val context: Context) : N
     override fun setUserlist(encodedList: String, numPlayers: Int) {
         scope.launch {
             val players = decodePlayers(encodedList)
+            // 优化.md §B：双安卓场景里，「房主见聊天但成员列表空」的核心断点常在
+            // 「state 此刻不是 Lobby」——如成员侧已切到 GuestSelectIso/LaunchingGame，
+            // 之后再回 Lobby 时会丢失最近一次完整的 players 列表。这里把日志直接打到
+            // logcat，便于和 native 侧 "JNI SetUserlist push" 行做时序对照。
+            val current = _uiState.value
+            if (current !is LanNetplayUiState.Lobby) {
+                Log.w(TAG, "setUserlist arrived while state=${current::class.simpleName} " +
+                    "size=${players.size} numPlayers=$numPlayers (kept, not pushed to UI)")
+            } else {
+                Log.d(TAG, "setUserlist size=${players.size} numPlayers=$numPlayers")
+            }
             _uiState.update { state ->
                 if (state is LanNetplayUiState.Lobby)
                     state.copy(players = players, numPlayers = numPlayers)
@@ -218,10 +262,14 @@ class LanNetplayRepository private constructor(private val context: Context) : N
     }
 
     override fun requestGuestIsoSelection(
-        crcHex: String, serial: String, hostHadCheats: Boolean, cheatData: String
+        crcHex: String,
+        serial: String,
+        hostHadCheats: Boolean,
+        fairPlayNetplay: Boolean,
+        cheatData: String,
     ) {
         scope.launch {
-            val cheatFiles = if (hostHadCheats && cheatData.isNotEmpty())
+            val cheatFiles = if (hostHadCheats && cheatData.isNotEmpty() && !fairPlayNetplay)
                 decodeCheatFiles(cheatData) else emptyList()
 
             // 优化：成员收到房主游戏 (serial, CRC) 后，先尝试用本地 game library cache
@@ -233,7 +281,7 @@ class LanNetplayRepository private constructor(private val context: Context) : N
             // 未命中时回退到原 GuestSelectIso UI，用户手动 pick。
             val matched = runCatching { findMatchingLocalIso(serial, crcHex) }.getOrNull()
             if (matched != null) {
-                guestConfirmReady(matched, hostHadCheats, cheatFiles)
+                guestConfirmReady(matched, hostHadCheats, cheatFiles, fairPlayNetplay)
                 return@launch
             }
 
@@ -241,9 +289,10 @@ class LanNetplayRepository private constructor(private val context: Context) : N
                 expectedCrcHex = crcHex,
                 serial = serial,
                 hostHadCheats = hostHadCheats,
+                fairPlayNetplay = fairPlayNetplay,
                 cheatFiles = cheatFiles,
             )
-            _events.emit(LanNetplayEvent.RequestIso(crcHex, serial, hostHadCheats, cheatFiles))
+            _events.emit(LanNetplayEvent.RequestIso(crcHex, serial, hostHadCheats, fairPlayNetplay, cheatFiles))
         }
     }
 
@@ -321,6 +370,35 @@ class LanNetplayRepository private constructor(private val context: Context) : N
     override fun minimizeLobby() {
         scope.launch { _events.emit(LanNetplayEvent.MinimizeLobby) }
     }
+
+    override fun onSyncMismatch(reason: String, localValue: String, peerValue: String) {
+        // 优化.md §B：把 BIOS / DiscID / SkipMPEG / 镜像 CRC 不匹配通过 Error 事件 + Error
+        // 状态双通道暴露给 UI——
+        //   - LanNetplayEvent.Error 触发 LanNetplayScreen 的 Toast.makeText（一次性提示）；
+        //   - LanNetplayUiState.Error 让大厅文案稳定停留在「为什么进不去」，避免一瞬而过。
+        // 同时调用 endSession() 收掉 native 侧的 shoryu 重试（join() 内 20 次重试每次 1s
+        // 仍能触发新的 mismatch，会反复弹 Toast；endSession 后 _is_stopped=true，retry 循环
+        // 立即跳出，UI 不再受打扰）。
+        Log.w(TAG, "onSyncMismatch reason=$reason local='$localValue' peer='$peerValue'")
+        scope.launch {
+            val message = formatMismatchMessage(reason, localValue, peerValue)
+            _events.emit(LanNetplayEvent.Error(message))
+            _uiState.value = LanNetplayUiState.Error(message)
+            // 让 native 侧停止重试。Kotlin endSession 会把 _uiState 切到 Idle，所以
+            // 必须先 emit Error 再调用 endSession 才能看到 Error 文案——但 endSession 总会
+            // 把状态覆盖为 Idle。改用直接调原生 endSession，跳过 _uiState 覆盖。
+            runCatching { LanNetplayNative.endSession() }
+        }
+    }
+
+    private fun formatMismatchMessage(reason: String, local: String, peer: String): String =
+        when (reason) {
+            "bios" -> "BIOS 版本不一致，无法加入房间。\n本机：${local.ifBlank { "未知" }}\n对端：${peer.ifBlank { "未知" }}"
+            "disc_id" -> "游戏序列号不一致，无法启动联机。\n本机：${local.ifBlank { "未知" }}\n对端：${peer.ifBlank { "未知" }}"
+            "skip_mpeg" -> "金手指 / SkipMPEG 设置不一致。\n本机：${local}\n对端：${peer}"
+            "game_crc" -> "游戏镜像 CRC 不一致，无法启动联机。\n本机：${local.ifBlank { "未知" }}\n对端：${peer.ifBlank { "未知" }}"
+            else -> "联机配置不一致 ($reason)：本机=${local} / 对端=${peer}"
+        }
 
     // ── 私有工具 ───────────────────────────────────────────────────────────────
 

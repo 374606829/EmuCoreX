@@ -185,6 +185,15 @@ void GSDeviceVK::EnsureReShadeChainInitialized()
 	}
 }
 
+void GSDeviceVK::ReloadReShadeChain()
+{
+	// Drop existing chain (if any) and rearm the lazy initializer; the
+	// next BeginPresent will re-read preset.ini and rebuild from scratch.
+	if (m_reshade_chain)
+		m_reshade_chain->Reset();
+	m_reshade_chain_init_attempted = false;
+}
+
 VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtensions* oe, bool enable_debug_utils,
 	bool enable_validation_layer)
 {

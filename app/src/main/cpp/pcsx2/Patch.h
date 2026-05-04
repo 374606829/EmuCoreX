@@ -190,6 +190,10 @@ namespace Patch
 	extern void ReloadPatches(const std::string& serial, u32 crc, bool reload_files, bool reload_enabled_list, bool verbose, bool verbose_if_changed);
 
 	extern void UpdateActivePatches(bool reload_enabled_list, bool verbose, bool verbose_if_changed, bool apply_new_patches);
+
+	/// 局域网联机「公平」模式（房主开启）：不向活动补丁列表注入 cheats 目录金手指（本会话）。
+	extern void SetFairPlayLanDisableDiskCheats(bool disable);
+	extern bool GetFairPlayLanDisableDiskCheats();
 	extern void ApplyPatchSettingOverrides();
 	extern bool ReloadPatchAffectingOptions();
 	extern void UnloadPatches();

@@ -57,6 +57,7 @@ struct LanCallbackMethodIds
     jmethodID requestGuestIsoSelection = nullptr;
     jmethodID presentLobby = nullptr;
     jmethodID minimizeLobby = nullptr;
+    jmethodID onSyncMismatch = nullptr;
 } g_lanMids;
 
 static bool g_lanMidsReady = false;
@@ -129,7 +130,16 @@ public:
     void SetUserlist(const std::vector<LanUserInfo>& users, int numPlayers) override
     {
         std::lock_guard<std::mutex> lk(g_jniCallbackMutex);
-        if (!g_lanCallbackObj || !g_lanMidsReady) return;
+        if (!g_lanCallbackObj || !g_lanMidsReady)
+        {
+            // 优化.md §B：调试期常见情况——Plugin 已经在喊"我有 N 个玩家"，但 Kotlin
+            // 还没注册 callback。这里把丢弃事件落到 logcat，便于双端日志对比。
+            Console.WriteLn(
+                "NETPLAY LAN: JNI SetUserlist DROPPED (callback %s, mids %s) size=%zu numPlayers=%d",
+                g_lanCallbackObj ? "ok" : "null", g_lanMidsReady ? "ok" : "not-ready",
+                users.size(), numPlayers);
+            return;
+        }
         bool didAttach;
         JNIEnv* env = AttachOrGetEnv(didAttach);
         if (!env) return;
@@ -140,6 +150,9 @@ public:
             if (!encoded.empty()) encoded += ',';
             encoded += u.name + '|' + u.ping + '|' + std::to_string(u.side);
         }
+        Console.WriteLn(
+            "NETPLAY LAN: JNI SetUserlist push size=%zu numPlayers=%d encoded='%s'",
+            users.size(), numPlayers, encoded.c_str());
         jstring jenc = StdStringToJString(env, encoded);
         env->CallVoidMethod(g_lanCallbackObj, g_lanMids.setUserlist, jenc, (jint)numPlayers);
         env->DeleteLocalRef(jenc);
@@ -172,6 +185,7 @@ public:
 
     void RequestGuestIsoSelection(uint32_t expectedCrc, const std::string& serial,
                                   bool hostHadCheats,
+                                  bool fairPlayNetplay,
                                   const std::vector<std::pair<std::string,std::string>>& cheatFiles) override
     {
         std::lock_guard<std::mutex> lk(g_jniCallbackMutex);
@@ -195,7 +209,7 @@ public:
         jstring jserial = StdStringToJString(env, serial);
         jstring jcheats = StdStringToJString(env, cheatEncoded);
         env->CallVoidMethod(g_lanCallbackObj, g_lanMids.requestGuestIsoSelection,
-                            jcrc, jserial, (jboolean)hostHadCheats, jcheats);
+                            jcrc, jserial, (jboolean)hostHadCheats, (jboolean)fairPlayNetplay, jcheats);
         env->DeleteLocalRef(jcrc);
         env->DeleteLocalRef(jserial);
         env->DeleteLocalRef(jcheats);
@@ -221,6 +235,38 @@ public:
         JNIEnv* env = AttachOrGetEnv(didAttach);
         if (!env) return;
         env->CallVoidMethod(g_lanCallbackObj, g_lanMids.minimizeLobby);
+        DetachIfNeeded(didAttach);
+    }
+
+    void OnSyncMismatch(const std::string& reason,
+                        const std::string& localValue,
+                        const std::string& peerValue) override
+    {
+        // 优化.md §B：把 BIOS / DiscID / SkipMPEG / 镜像 CRC 不匹配的细节直送 Kotlin。
+        // 故意把日志走 Console.WriteLn（INFO 级）——mismatch 已经是已知的"会拒连"信号，
+        // 不应被当作 Error 级别的崩溃日志在 logcat 里过度醒目。Kotlin 侧再决定 Toast / Error 状态。
+        std::lock_guard<std::mutex> lk(g_jniCallbackMutex);
+        if (!g_lanCallbackObj || !g_lanMidsReady)
+        {
+            Console.WriteLn(
+                "NETPLAY LAN: JNI OnSyncMismatch DROPPED reason='%s' local='%s' peer='%s' (callback %s)",
+                reason.c_str(), localValue.c_str(), peerValue.c_str(),
+                g_lanCallbackObj ? "ok" : "null");
+            return;
+        }
+        bool didAttach;
+        JNIEnv* env = AttachOrGetEnv(didAttach);
+        if (!env) return;
+        Console.WriteLn(
+            "NETPLAY LAN: JNI OnSyncMismatch push reason='%s' local='%s' peer='%s'",
+            reason.c_str(), localValue.c_str(), peerValue.c_str());
+        jstring jr = StdStringToJString(env, reason);
+        jstring jl = StdStringToJString(env, localValue);
+        jstring jp = StdStringToJString(env, peerValue);
+        env->CallVoidMethod(g_lanCallbackObj, g_lanMids.onSyncMismatch, jr, jl, jp);
+        env->DeleteLocalRef(jr);
+        env->DeleteLocalRef(jl);
+        env->DeleteLocalRef(jp);
         DetachIfNeeded(didAttach);
     }
 };
@@ -258,9 +304,10 @@ Java_com_sbro_emucorex_core_NativeApp_lanRegisterCallback(
     g_lanMids.setUserlist            = env->GetMethodID(cls, "setUserlist",            "(Ljava/lang/String;I)V");
     g_lanMids.onConnectionEstablished= env->GetMethodID(cls, "onConnectionEstablished","(I)V");
     g_lanMids.requestLaunchGame      = env->GetMethodID(cls, "requestLaunchGame",      "(Ljava/lang/String;Z)V");
-    g_lanMids.requestGuestIsoSelection=env->GetMethodID(cls, "requestGuestIsoSelection","(Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)V");
+    g_lanMids.requestGuestIsoSelection=env->GetMethodID(cls, "requestGuestIsoSelection","(Ljava/lang/String;Ljava/lang/String;ZZLjava/lang/String;)V");
     g_lanMids.presentLobby           = env->GetMethodID(cls, "presentLobby",           "()V");
     g_lanMids.minimizeLobby          = env->GetMethodID(cls, "minimizeLobby",          "()V");
+    g_lanMids.onSyncMismatch         = env->GetMethodID(cls, "onSyncMismatch",         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
     env->DeleteLocalRef(cls);
 
     g_lanMidsReady = (g_lanMids.setStatus != nullptr);
@@ -362,11 +409,12 @@ Java_com_sbro_emucorex_core_NativeApp_lanOnVmStopped(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_sbro_emucorex_core_NativeApp_lanHostConfirmStart(
-    JNIEnv* env, jclass /*clazz*/, jstring isoPath, jint inputDelay)
+    JNIEnv* env, jclass /*clazz*/, jstring isoPath, jint inputDelay, jboolean fairPlayNetplay)
 {
     NetplayLanAndroidController::GetInstance().HostConfirmStart(
         JStringToStdString(env, isoPath),
-        static_cast<int>(inputDelay));
+        static_cast<int>(inputDelay),
+        static_cast<bool>(fairPlayNetplay));
 }
 
 // ─────────────────────────────────────────────────
@@ -429,6 +477,13 @@ Java_com_sbro_emucorex_core_NativeApp_lanIsEnabled(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sbro_emucorex_core_NativeApp_lanFairPlayNetplay(
+    JNIEnv* /*env*/, jclass /*clazz*/)
+{
+    return static_cast<jboolean>(g_LanNetplaySettings.FairPlayNetplay);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_sbro_emucorex_core_NativeApp_lanIsHost(
     JNIEnv* /*env*/, jclass /*clazz*/)
 {
@@ -440,4 +495,11 @@ Java_com_sbro_emucorex_core_NativeApp_lanSetInputDelay(
     JNIEnv* /*env*/, jclass /*clazz*/, jint delay)
 {
     NetplayLanAndroidController::GetInstance().SetInputDelay(static_cast<int>(delay));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sbro_emucorex_core_NativeApp_lanBroadcastRuntimeCheatPnach(
+    JNIEnv* env, jclass /*clazz*/, jstring jtext)
+{
+    NetplayLanAndroidController::GetInstance().BroadcastRuntimeCheatPnachUtf8(JStringToStdString(env, jtext));
 }

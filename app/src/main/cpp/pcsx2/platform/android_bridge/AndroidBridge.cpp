@@ -11,6 +11,7 @@
 #include "common/Error.h"
 #include "pcsx2/GS.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "pcsx2/AutoTestTTYCapture.h"
 #include "pcsx2/core/runtime/BuildVersion.h"
 #include "pcsx2/VMManager.h"
@@ -43,6 +44,8 @@
 #include "ImGui/FullscreenUI.h"
 #include "SIO/Pad/PadDualshock2.h"
 #include "NetplayHook.h"
+#include "pcsx2/Netplay/NetplayLanAndroidController.h"
+#include "pcsx2/Netplay/NetplayLanSettingsAndroid.h"
 #include "MTGS.h"
 #include "SDL3/SDL.h"
 #include <future>
@@ -1301,6 +1304,22 @@ Java_com_sbro_emucorex_core_NativeApp_reloadTextureReplacements(JNIEnv*, jclass)
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_com_sbro_emucorex_core_NativeApp_reloadReShadePreset(JNIEnv*, jclass)
+{
+	// Schedule the chain rebuild on the GS thread. The next BeginPresent
+	// will re-read <DataRoot>/shaders/reshade/preset.ini, recompile every
+	// listed *.fx and reupload the parameter UBOs. The Kotlin UI's "保存"
+	// button calls this after writing the user-edited parameters back to
+	// disk, so adjustments take effect without restarting the VM.
+	MTGS::RunOnGSThread([]() {
+		GSDevice* gd = g_gs_device.get();
+		if (gd && gd->GetRenderAPI() == RenderAPI::Vulkan)
+			static_cast<GSDeviceVK*>(gd)->ReloadReShadeChain();
+	});
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_com_sbro_emucorex_core_NativeApp_reloadDataRoot(JNIEnv* env, jclass, jstring p_szpath)
 {
     std::string new_path = GetJavaString(env, p_szpath);
@@ -1742,6 +1761,52 @@ Java_com_sbro_emucorex_core_NativeApp_getGameSerial(JNIEnv *env, jclass clazz) {
         return VMManager::GetDiscSerial();
     });
     return env->NewStringUTF(ret.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_sbro_emucorex_core_NativeApp_readActiveGamePnach(JNIEnv* env, jclass)
+{
+    std::string content = RunOnCPUThreadBlocking<std::string>(std::string(), []() -> std::string {
+        if (!VMManager::HasValidVM())
+            return {};
+        std::string serial = VMManager::GetDiscSerial();
+        const u32 crc = VMManager::GetDiscCRC();
+        if (serial.empty() || crc == 0)
+            return {};
+        const std::string base = fmt::format("{}_{:08X}.pnach", serial, crc);
+        const std::string full = Path::Combine(EmuFolders::Cheats, base);
+        std::optional<std::string> opt = FileSystem::ReadFileToString(full.c_str());
+        return opt.value_or(std::string());
+    });
+    return env->NewStringUTF(content.c_str());
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_sbro_emucorex_core_NativeApp_writeActiveGamePnachAndReload(JNIEnv* env, jclass, jstring jtext)
+{
+    const std::string utf8_copy = GetJavaString(env, jtext);
+    const bool ok = RunOnCPUThreadBlocking<bool>(false, [&utf8_copy]() -> bool {
+        if (!VMManager::HasValidVM())
+            return false;
+        std::string serial = VMManager::GetDiscSerial();
+        const u32 crc = VMManager::GetDiscCRC();
+        if (serial.empty() || crc == 0)
+            return false;
+        const std::string base = fmt::format("{}_{:08X}.pnach", serial, crc);
+        if (base.find('/') != std::string::npos || base.find('\\') != std::string::npos ||
+            base.find("..") != std::string::npos)
+            return false;
+        if (!FileSystem::DirectoryExists(EmuFolders::Cheats.c_str()))
+            FileSystem::CreateDirectoryPath(EmuFolders::Cheats.c_str(), true);
+        const std::string full = Path::Combine(EmuFolders::Cheats, base);
+        if (!FileSystem::WriteBinaryFile(full.c_str(), utf8_copy.data(), utf8_copy.size()))
+            return false;
+        Patch::ReloadPatches(serial, crc, true, true, false, false);
+        return true;
+    });
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
@@ -2465,6 +2530,11 @@ Java_com_sbro_emucorex_core_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz,
     if (!VMManager::HasValidVM()) {
         return false;
     }
+	if (g_LanNetplaySettings.FairPlayNetplay)
+	{
+		Console.Warning("(NativeApp::saveStateToSlot) Blocked — Fair LAN netplay is enabled.");
+		return JNI_FALSE;
+	}
 
     bool result = false;
     Host::RunOnCPUThread([p_slot, &result]() {
@@ -2494,6 +2564,11 @@ Java_com_sbro_emucorex_core_NativeApp_loadStateFromSlot(JNIEnv *env, jclass claz
         Console.Warning(fmt::format("(NativeApp::loadStateFromSlot) Ignoring load for slot {} because VM is not valid.", p_slot));
         return false;
     }
+	if (g_LanNetplaySettings.FairPlayNetplay)
+	{
+		Console.Warning("(NativeApp::loadStateFromSlot) Blocked — Fair LAN netplay is enabled.");
+		return JNI_FALSE;
+	}
 
     bool result = false;
     Host::RunOnCPUThread([p_slot, &result]() {

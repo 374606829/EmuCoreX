@@ -29,10 +29,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class EmulationUiState(
@@ -64,6 +66,7 @@ data class EmulationUiState(
     val gamepadLeftStickSensitivity: Int = AppPreferences.DEFAULT_GAMEPAD_STICK_SENSITIVITY,
     val gamepadRightStickSensitivity: Int = AppPreferences.DEFAULT_GAMEPAD_STICK_SENSITIVITY,
     val stickSurfaceMode: Boolean = false,
+    val stickToDpadMode: Int = AppPreferences.DEFAULT_STICK_DPAD_MODE,
     val controlLayouts: Map<String, OverlayControlLayout> = AppPreferences.defaultOverlayControlLayouts(),
     val fps: String = "0.0",
     val fpsOverlayMode: Int = FPS_OVERLAY_MODE_DETAILED,
@@ -131,7 +134,12 @@ data class EmulationUiState(
     val targetFps: Int = 0,
     val currentGameTitle: String = "",
     val currentGameSubtitle: String = "",
-    val gameSettingsProfileActive: Boolean = false
+    val gameSettingsProfileActive: Boolean = false,
+    /** 公平联机勾选且在运行时由 JNI 同步：禁用即时存档与解除帧限制等（普通联机不勾选则不影响）。 */
+    val lanNetplayRestrictFeatures: Boolean = false,
+    /** 游戏中编辑 `{serial}_{crc}.pnach` 的全屏对话框是否可见。 */
+    val showRuntimePnachEditor: Boolean = false,
+    val runtimePnachDraft: String = "",
 )
 
 private data class EmulationLaunchConfig(
@@ -664,8 +672,11 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun startEmulation(path: String?, slotToLoad: Int? = null, bootToBios: Boolean = false) {
         if (_uiState.value.isStarting) return
+        val fairPlayBootEarly = runCatching { LanNetplayNative.fairPlayNetplay() }.getOrDefault(false)
         val normalizedSlotToLoad = slotToLoad?.let { normalizeSaveSlot(it) }
-        val hasPendingStateLoad = !bootToBios && normalizedSlotToLoad != null
+        val resumeBlockedDueToFairPlay = fairPlayBootEarly && normalizedSlotToLoad != null
+        val effectiveSlotToLoad = if (fairPlayBootEarly) null else normalizedSlotToLoad
+        val hasPendingStateLoad = !bootToBios && effectiveSlotToLoad != null
         cancelPendingStart = false
         pausedForBackground = false
         currentGamePath = if (bootToBios) null else path?.takeIf { it.isNotBlank() }
@@ -690,6 +701,8 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                 )
 
                 val config = loadLaunchConfig()
+                val bootRuntimeConfig =
+                    if (fairPlayBootEarly) config.copy(frameLimitEnabled = true, targetFps = 0) else config
 
                 val resolvedBiosPath = DocumentPathResolver.prepareBiosDirectory(getApplication(), config.biosPath)
                     ?: config.biosPath?.let(DocumentPathResolver::resolveDirectoryPath)
@@ -712,77 +725,77 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                 delay(200)
 
                 EmulatorBridge.applyRuntimeConfig(
-                    biosPath = config.biosPath,
-                    memoryCardSlot1 = config.memoryCardSlot1,
-                    memoryCardSlot2 = config.memoryCardSlot2,
-                    renderer = config.renderer,
-                    upscaleMultiplier = config.upscaleMultiplier,
-                    gpuDriverType = config.gpuDriverType,
-                    customDriverPath = config.customDriverPath,
-                    aspectRatio = config.aspectRatio,
-                    enableEeRecompiler = config.enableEeRecompiler,
-                    enableIopRecompiler = config.enableIopRecompiler,
-                    enableVu0Recompiler = config.enableVu0Recompiler,
-                    enableVu1Recompiler = config.enableVu1Recompiler,
-                    mtvu = config.mtvu,
-                    fastCdvd = config.fastCdvd,
-                    enableCheats = config.enableCheats,
-                    hwDownloadMode = config.hwDownloadMode,
-                    eeCycleRate = config.eeCycleRate,
-                    eeCycleSkip = config.eeCycleSkip,
-                    frameSkip = config.frameSkip,
-                    skipDuplicateFrames = config.skipDuplicateFrames,
-                    frameLimitEnabled = config.frameLimitEnabled,
-                    targetFps = config.targetFps,
-                    textureFiltering = config.textureFiltering,
-                    trilinearFiltering = config.trilinearFiltering,
-                    blendingAccuracy = config.blendingAccuracy,
-                    texturePreloading = config.texturePreloading,
-                    loadTextureReplacements = config.loadTextureReplacements,
-                    dumpReplaceableTextures = config.dumpReplaceableTextures,
-                    textureRootPath = config.textureRootPath,
-                    enableFxaa = config.enableFxaa,
-                    casMode = config.casMode,
-                    casSharpness = config.casSharpness,
-                    shadeBoostEnabled = config.shadeBoostEnabled,
-                    shadeBoostBrightness = config.shadeBoostBrightness,
-                    shadeBoostContrast = config.shadeBoostContrast,
-                    shadeBoostSaturation = config.shadeBoostSaturation,
-                    shadeBoostGamma = config.shadeBoostGamma,
-                    anisotropicFiltering = config.anisotropicFiltering,
-                    enableHwMipmapping = config.enableHwMipmapping,
-                    widescreenPatches = config.widescreenPatches,
-                    noInterlacingPatches = config.noInterlacingPatches,
-                    cpuSpriteRenderSize = config.cpuSpriteRenderSize,
-                    cpuSpriteRenderLevel = config.cpuSpriteRenderLevel,
-                    softwareClutRender = config.softwareClutRender,
-                    gpuTargetClutMode = config.gpuTargetClutMode,
-                    skipDrawStart = config.skipDrawStart,
-                    skipDrawEnd = config.skipDrawEnd,
-                    autoFlushHardware = config.autoFlushHardware,
-                    cpuFramebufferConversion = config.cpuFramebufferConversion,
-                    disableDepthConversion = config.disableDepthConversion,
-                    disableSafeFeatures = config.disableSafeFeatures,
-                    disableRenderFixes = config.disableRenderFixes,
-                    preloadFrameData = config.preloadFrameData,
-                    disablePartialInvalidation = config.disablePartialInvalidation,
-                    textureInsideRt = config.textureInsideRt,
-                    readTargetsOnClose = config.readTargetsOnClose,
-                    estimateTextureRegion = config.estimateTextureRegion,
-                    gpuPaletteConversion = config.gpuPaletteConversion,
-                    halfPixelOffset = config.halfPixelOffset,
-                    nativeScaling = config.nativeScaling,
-                    roundSprite = config.roundSprite,
-                    bilinearUpscale = config.bilinearUpscale,
-                    textureOffsetX = config.textureOffsetX,
-                    textureOffsetY = config.textureOffsetY,
-                    alignSprite = config.alignSprite,
-                    mergeSprite = config.mergeSprite,
-                    forceEvenSpritePosition = config.forceEvenSpritePosition,
-                    nativePaletteDraw = config.nativePaletteDraw,
-                    fpuClampMode = config.fpuClampMode,
-                    disableHardwareReadbacks = config.disableHardwareReadbacks,
-                    fpuCorrectAddSub = config.fpuCorrectAddSub
+                    biosPath = bootRuntimeConfig.biosPath,
+                    memoryCardSlot1 = bootRuntimeConfig.memoryCardSlot1,
+                    memoryCardSlot2 = bootRuntimeConfig.memoryCardSlot2,
+                    renderer = bootRuntimeConfig.renderer,
+                    upscaleMultiplier = bootRuntimeConfig.upscaleMultiplier,
+                    gpuDriverType = bootRuntimeConfig.gpuDriverType,
+                    customDriverPath = bootRuntimeConfig.customDriverPath,
+                    aspectRatio = bootRuntimeConfig.aspectRatio,
+                    enableEeRecompiler = bootRuntimeConfig.enableEeRecompiler,
+                    enableIopRecompiler = bootRuntimeConfig.enableIopRecompiler,
+                    enableVu0Recompiler = bootRuntimeConfig.enableVu0Recompiler,
+                    enableVu1Recompiler = bootRuntimeConfig.enableVu1Recompiler,
+                    mtvu = bootRuntimeConfig.mtvu,
+                    fastCdvd = bootRuntimeConfig.fastCdvd,
+                    enableCheats = bootRuntimeConfig.enableCheats,
+                    hwDownloadMode = bootRuntimeConfig.hwDownloadMode,
+                    eeCycleRate = bootRuntimeConfig.eeCycleRate,
+                    eeCycleSkip = bootRuntimeConfig.eeCycleSkip,
+                    frameSkip = bootRuntimeConfig.frameSkip,
+                    skipDuplicateFrames = bootRuntimeConfig.skipDuplicateFrames,
+                    frameLimitEnabled = bootRuntimeConfig.frameLimitEnabled,
+                    targetFps = bootRuntimeConfig.targetFps,
+                    textureFiltering = bootRuntimeConfig.textureFiltering,
+                    trilinearFiltering = bootRuntimeConfig.trilinearFiltering,
+                    blendingAccuracy = bootRuntimeConfig.blendingAccuracy,
+                    texturePreloading = bootRuntimeConfig.texturePreloading,
+                    loadTextureReplacements = bootRuntimeConfig.loadTextureReplacements,
+                    dumpReplaceableTextures = bootRuntimeConfig.dumpReplaceableTextures,
+                    textureRootPath = bootRuntimeConfig.textureRootPath,
+                    enableFxaa = bootRuntimeConfig.enableFxaa,
+                    casMode = bootRuntimeConfig.casMode,
+                    casSharpness = bootRuntimeConfig.casSharpness,
+                    shadeBoostEnabled = bootRuntimeConfig.shadeBoostEnabled,
+                    shadeBoostBrightness = bootRuntimeConfig.shadeBoostBrightness,
+                    shadeBoostContrast = bootRuntimeConfig.shadeBoostContrast,
+                    shadeBoostSaturation = bootRuntimeConfig.shadeBoostSaturation,
+                    shadeBoostGamma = bootRuntimeConfig.shadeBoostGamma,
+                    anisotropicFiltering = bootRuntimeConfig.anisotropicFiltering,
+                    enableHwMipmapping = bootRuntimeConfig.enableHwMipmapping,
+                    widescreenPatches = bootRuntimeConfig.widescreenPatches,
+                    noInterlacingPatches = bootRuntimeConfig.noInterlacingPatches,
+                    cpuSpriteRenderSize = bootRuntimeConfig.cpuSpriteRenderSize,
+                    cpuSpriteRenderLevel = bootRuntimeConfig.cpuSpriteRenderLevel,
+                    softwareClutRender = bootRuntimeConfig.softwareClutRender,
+                    gpuTargetClutMode = bootRuntimeConfig.gpuTargetClutMode,
+                    skipDrawStart = bootRuntimeConfig.skipDrawStart,
+                    skipDrawEnd = bootRuntimeConfig.skipDrawEnd,
+                    autoFlushHardware = bootRuntimeConfig.autoFlushHardware,
+                    cpuFramebufferConversion = bootRuntimeConfig.cpuFramebufferConversion,
+                    disableDepthConversion = bootRuntimeConfig.disableDepthConversion,
+                    disableSafeFeatures = bootRuntimeConfig.disableSafeFeatures,
+                    disableRenderFixes = bootRuntimeConfig.disableRenderFixes,
+                    preloadFrameData = bootRuntimeConfig.preloadFrameData,
+                    disablePartialInvalidation = bootRuntimeConfig.disablePartialInvalidation,
+                    textureInsideRt = bootRuntimeConfig.textureInsideRt,
+                    readTargetsOnClose = bootRuntimeConfig.readTargetsOnClose,
+                    estimateTextureRegion = bootRuntimeConfig.estimateTextureRegion,
+                    gpuPaletteConversion = bootRuntimeConfig.gpuPaletteConversion,
+                    halfPixelOffset = bootRuntimeConfig.halfPixelOffset,
+                    nativeScaling = bootRuntimeConfig.nativeScaling,
+                    roundSprite = bootRuntimeConfig.roundSprite,
+                    bilinearUpscale = bootRuntimeConfig.bilinearUpscale,
+                    textureOffsetX = bootRuntimeConfig.textureOffsetX,
+                    textureOffsetY = bootRuntimeConfig.textureOffsetY,
+                    alignSprite = bootRuntimeConfig.alignSprite,
+                    mergeSprite = bootRuntimeConfig.mergeSprite,
+                    forceEvenSpritePosition = bootRuntimeConfig.forceEvenSpritePosition,
+                    nativePaletteDraw = bootRuntimeConfig.nativePaletteDraw,
+                    fpuClampMode = bootRuntimeConfig.fpuClampMode,
+                    disableHardwareReadbacks = bootRuntimeConfig.disableHardwareReadbacks,
+                    fpuCorrectAddSub = bootRuntimeConfig.fpuCorrectAddSub
                 )
 
                 _uiState.value = _uiState.value.copy(
@@ -865,7 +878,10 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 }
 
-                val liveRuntime = loadLiveRuntimeSnapshot()
+                val liveRuntimeRaw = loadLiveRuntimeSnapshot()
+                val liveRuntime =
+                    if (fairPlayBootEarly) liveRuntimeRaw.copy(frameLimitEnabled = true, targetFps = 0)
+                    else liveRuntimeRaw
 
                 _uiState.value = _uiState.value.copy(
                     showFps = liveRuntime.showFps,
@@ -924,7 +940,8 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     forceEvenSpritePosition = liveRuntime.forceEvenSpritePosition,
                     nativePaletteDraw = liveRuntime.nativePaletteDraw,
                     frameLimitEnabled = liveRuntime.frameLimitEnabled,
-                    targetFps = liveRuntime.targetFps
+                    targetFps = liveRuntime.targetFps,
+                    lanNetplayRestrictFeatures = fairPlayBootEarly
                 )
                 syncNativePerformanceOverlayState(_uiState.value)
                 updateCrashContext(
@@ -932,7 +949,16 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     launchPath = path
                 )
             }
-            
+
+            if (resumeBlockedDueToFairPlay) {
+                delay(400)
+                _uiState.value = _uiState.value.copy(toastMessage = "lan_netplay_resume_blocked")
+                delay(3200)
+                if (_uiState.value.toastMessage == "lan_netplay_resume_blocked") {
+                    _uiState.value = _uiState.value.copy(toastMessage = null)
+                }
+            }
+
             if (hasPendingStateLoad) {
                 viewModelScope.launch(Dispatchers.IO) {
                     var vmReadyWaitFrames = 0
@@ -958,7 +984,8 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     }
 
                     delay(500)
-                    val loaded = EmulatorBridge.loadState(normalizedSlotToLoad)
+                    val slotToResume = effectiveSlotToLoad ?: return@launch
+                    val loaded = EmulatorBridge.loadState(slotToResume)
                     _uiState.value = _uiState.value.copy(
                         isRunning = true,
                         isPaused = false,
@@ -994,11 +1021,20 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     var waitFrames = 0
                     while (waitFrames < 60 && isActive) {
                         if (EmulatorBridge.hasValidVm()) {
-                            runCatching {
+                            try {
                                 if (LanNetplayNative.isEnabled()) {
                                     LanNetplayNative.onVmStarted()
+                                    if (runCatching { LanNetplayNative.fairPlayNetplay() }.getOrDefault(false)) {
+                                        EmulatorBridge.setFrameLimitEnabled(true)
+                                        EmulatorBridge.setTargetFps(0)
+                                        _uiState.value = _uiState.value.copy(
+                                            frameLimitEnabled = true,
+                                            targetFps = 0,
+                                            lanNetplayRestrictFeatures = true
+                                        )
+                                    }
                                 }
-                            }
+                            } catch (_: Exception) { }
                             _uiState.value = _uiState.value.copy(statusMessage = "status_running")
                             delay(2000)
                             if (_uiState.value.statusMessage == "status_running") {
@@ -1185,6 +1221,19 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun setStickToDpadMode(mode: Int) {
+        viewModelScope.launch {
+            val normalized = when (mode) {
+                AppPreferences.STICK_DPAD_MODE_STICK_ONLY,
+                AppPreferences.STICK_DPAD_MODE_DPAD_ONLY,
+                AppPreferences.STICK_DPAD_MODE_BOTH -> mode
+                else -> AppPreferences.DEFAULT_STICK_DPAD_MODE
+            }
+            preferences.setStickToDpadMode(normalized)
+            _uiState.value = _uiState.value.copy(stickToDpadMode = normalized)
+        }
+    }
+
     fun setGamepadStickDeadzone(value: Int) {
         viewModelScope.launch {
             val normalized = value.coerceIn(0, 35)
@@ -1346,6 +1395,72 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun openRuntimePnachEditor() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = runCatching { NativeApp.readActiveGamePnach() }.getOrDefault("")
+            withContext(Dispatchers.Main.immediate) {
+                _uiState.update {
+                    it.copy(showRuntimePnachEditor = true, runtimePnachDraft = text)
+                }
+            }
+        }
+    }
+
+    fun dismissRuntimePnachEditor() {
+        _uiState.update { it.copy(showRuntimePnachEditor = false) }
+    }
+
+    fun setRuntimePnachDraft(value: String) {
+        _uiState.update { it.copy(runtimePnachDraft = value) }
+    }
+
+    fun saveRuntimePnachDraft() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val body = _uiState.value.runtimePnachDraft
+            if (!NativeApp.hasValidVm()) {
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update { it.copy(toastMessage = "emulation_edit_cheats_no_vm") }
+                }
+                delay(2600)
+                withContext(Dispatchers.Main.immediate) {
+                    if (_uiState.value.toastMessage == "emulation_edit_cheats_no_vm") {
+                        _uiState.update { it.copy(toastMessage = null) }
+                    }
+                }
+                return@launch
+            }
+            val ok = runCatching { NativeApp.writeActiveGamePnachAndReload(body) }.getOrDefault(false)
+            if (ok) {
+                runCatching {
+                    if (LanNetplayNative.isEnabled() && !LanNetplayNative.fairPlayNetplay()) {
+                        LanNetplayNative.broadcastRuntimeCheatPnach(body)
+                    }
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update {
+                        it.copy(showRuntimePnachEditor = false, toastMessage = "emulation_edit_cheats_saved")
+                    }
+                }
+                delay(2600)
+                withContext(Dispatchers.Main.immediate) {
+                    if (_uiState.value.toastMessage == "emulation_edit_cheats_saved") {
+                        _uiState.update { it.copy(toastMessage = null) }
+                    }
+                }
+            } else {
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update { it.copy(toastMessage = "emulation_edit_cheats_failed") }
+                }
+                delay(2600)
+                withContext(Dispatchers.Main.immediate) {
+                    if (_uiState.value.toastMessage == "emulation_edit_cheats_failed") {
+                        _uiState.update { it.copy(toastMessage = null) }
+                    }
+                }
+            }
+        }
+    }
+
     fun setCheatEnabled(blockId: String, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             val currentState = _uiState.value
@@ -1403,6 +1518,16 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setFrameLimitEnabled(enabled: Boolean) {
+        if (!enabled && runCatching { LanNetplayNative.fairPlayNetplay() }.getOrDefault(false)) {
+            viewModelScope.launch(Dispatchers.IO) {
+                _uiState.value = _uiState.value.copy(toastMessage = "lan_netplay_turbo_locked")
+                delay(2600)
+                if (_uiState.value.toastMessage == "lan_netplay_turbo_locked") {
+                    _uiState.value = _uiState.value.copy(toastMessage = null)
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             persistRuntimeState(_uiState.value.copy(frameLimitEnabled = enabled)) {
                 preferences.setFrameLimitEnabled(enabled)
@@ -2081,6 +2206,7 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
             leftStickSensitivity = snapshot.leftStickSensitivity,
             rightStickSensitivity = snapshot.rightStickSensitivity,
             stickSurfaceMode = snapshot.stickSurfaceMode,
+            stickToDpadMode = snapshot.stickToDpadMode,
             controlLayouts = snapshot.controlLayouts
         )
     }
@@ -2606,9 +2732,24 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun normalizeSaveSlot(slot: Int): Int = slot.coerceIn(1, 10)
 
+    fun refreshLanNetplayRestrictFlag() {
+        val restrict =
+            _uiState.value.isRunning && runCatching { LanNetplayNative.fairPlayNetplay() }.getOrDefault(false)
+        if (_uiState.value.lanNetplayRestrictFeatures == restrict) return
+        _uiState.value = _uiState.value.copy(lanNetplayRestrictFeatures = restrict)
+    }
+
     fun quickSave() {
         val slot = _uiState.value.currentSlot
         viewModelScope.launch(Dispatchers.IO) {
+            if (runCatching { LanNetplayNative.fairPlayNetplay() }.getOrDefault(false)) {
+                _uiState.value = _uiState.value.copy(toastMessage = "lan_netplay_savestates_locked")
+                delay(2600)
+                if (_uiState.value.toastMessage == "lan_netplay_savestates_locked") {
+                    _uiState.value = _uiState.value.copy(toastMessage = null)
+                }
+                return@launch
+            }
             _uiState.value = _uiState.value.copy(
                 isActionInProgress = true,
                 actionLabel = "saving"
@@ -2635,6 +2776,14 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
     fun quickLoad() {
         val slot = _uiState.value.currentSlot
         viewModelScope.launch(Dispatchers.IO) {
+            if (runCatching { LanNetplayNative.fairPlayNetplay() }.getOrDefault(false)) {
+                _uiState.value = _uiState.value.copy(toastMessage = "lan_netplay_savestates_locked")
+                delay(2600)
+                if (_uiState.value.toastMessage == "lan_netplay_savestates_locked") {
+                    _uiState.value = _uiState.value.copy(toastMessage = null)
+                }
+                return@launch
+            }
             _uiState.value = _uiState.value.copy(
                 isActionInProgress = true,
                 actionLabel = "loading"
@@ -2744,7 +2893,8 @@ class EmulationViewModel(application: Application) : AndroidViewModel(applicatio
                     fps = "0",
                     performanceOverlayText = "",
                     speedPercent = 100f,
-                    statusMessage = null
+                    statusMessage = null,
+                    lanNetplayRestrictFeatures = false
                 )
                 syncNativePerformanceOverlayState(_uiState.value)
                 clearCrashContext()

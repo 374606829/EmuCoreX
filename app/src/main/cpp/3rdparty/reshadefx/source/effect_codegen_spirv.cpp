@@ -1343,11 +1343,25 @@ private:
 						struct_element_ids.reserve(struct_definition.member_list.size());
 						for (const member_type &member : struct_definition.member_list)
 						{
-							const spv::Id input_var = create_varying_variable(member.type, member.semantic, spv::StorageClassInput, a);
+							type input_member_type = member.type;
+							const bool vid_uint = (member.semantic == "SV_VERTEXID" && member.type.is_unsigned());
+							if (vid_uint)
+							{
+								input_member_type = member.type;
+								input_member_type.base = type::t_int;
+							}
+
+							const spv::Id input_var = create_varying_variable(input_member_type, member.semantic, spv::StorageClassInput, a);
 
 							param_value =
-								add_instruction(spv::OpLoad, convert_type(member.type))
+								add_instruction(spv::OpLoad, convert_type(input_member_type))
 									.add(input_var);
+							if (vid_uint)
+							{
+								param_value =
+									add_instruction(spv::OpBitcast, convert_type(member.type))
+										.add(param_value);
+							}
 							struct_element_ids.push_back(param_value);
 						}
 
@@ -1367,11 +1381,25 @@ private:
 				}
 				else
 				{
-					const spv::Id input_var = create_varying_variable(param.type, param.semantic, spv::StorageClassInput);
+					type input_type = param.type;
+					const bool vid_uint = (param.semantic == "SV_VERTEXID" && param.type.is_unsigned());
+					if (vid_uint)
+					{
+						input_type = param.type;
+						input_type.base = type::t_int;
+					}
+
+					const spv::Id input_var = create_varying_variable(input_type, param.semantic, spv::StorageClassInput);
 
 					param_value =
-						add_instruction(spv::OpLoad, convert_type(param.type))
+						add_instruction(spv::OpLoad, convert_type(input_type))
 							.add(input_var);
+					if (vid_uint)
+					{
+						param_value =
+							add_instruction(spv::OpBitcast, convert_type(param.type))
+								.add(param_value);
+					}
 				}
 
 				add_instruction_without_result(spv::OpStore)

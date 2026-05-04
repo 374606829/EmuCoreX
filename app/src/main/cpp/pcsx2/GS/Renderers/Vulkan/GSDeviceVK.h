@@ -743,4 +743,12 @@ private:
 	bool m_reshade_chain_init_attempted = false;
 
 	void EnsureReShadeChainInitialized();
+
+public:
+	// Hot-reload the ReShade chain by tearing the existing one down and
+	// re-running the lazy initializer on the next frame. Safe to call from
+	// the GS thread (e.g. through MTGS::RunOnGSThread). Used by the
+	// in-emulation UI's "保存" button to apply a freshly written preset
+	// without restarting the VM.
+	void ReloadReShadeChain();
 };

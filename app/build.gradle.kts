@@ -55,7 +55,11 @@ android {
                 "proguard-rules.pro"
             )
             configure<com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsExtension> {
-                nativeSymbolUploadEnabled = true
+                // 见根目录 gradle.properties：受限网络下上传会阻塞 release 构建
+                mappingFileUploadEnabled =
+                    (findProperty("crashlytics.mappingFileUpload")?.toString()?.toBooleanStrictOrNull()) ?: false
+                nativeSymbolUploadEnabled =
+                    (findProperty("crashlytics.nativeSymbolUpload")?.toString()?.toBooleanStrictOrNull()) ?: false
             }
         }
     }

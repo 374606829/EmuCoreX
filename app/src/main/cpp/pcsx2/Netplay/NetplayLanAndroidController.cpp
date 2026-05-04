@@ -14,12 +14,15 @@
 
 #include "pcsx2/VMManager.h"
 #include "pcsx2/Config.h"
+#include "pcsx2/Patch.h"
 #include "pcsx2/core/runtime/GameList.h"
 #include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
+#include "platform/host/Host.h"
 
 #include <fmt/format.h>
+#include <atomic>
 
 #include <sstream>
 #include <algorithm>
@@ -117,6 +120,10 @@ static std::string ZlibCompress(const std::string& input, int level = 7)
     if (ret != Z_OK) return {};
     out.resize(4 + dest_len);
     return out;
+}
+
+namespace {
+std::atomic<uint32_t> s_rtChSendRevision{1};
 }
 
 // ---- 极简 JSON 辅助 ----
@@ -286,6 +293,10 @@ void NetplayLanAndroidController::StartSessionEx(
     g_NetplayRoomState.initial_frame_id = 0;
     g_NetplayRoomState.frame_interval_us = 16667;
     g_NetplayRoomState.frame_cache_size = 100;
+    // 与 PC NetplayFrameSyncClient::_protocol_version 默认值同步：固定为 0x0200，
+    // 避免 Android 单方升级导致与 PC 跨端 ParseBroadcastPacket 的 `if (ver !=
+    // _protocol_version) return false;` 相互静默丢包 → 双端 OnVSync 永远卡在
+    // WaitForFrame(0) 黑屏。§A 的 cheat RNG 走新增 msgType 0x000A 而非 wire 升版。
     g_NetplayRoomState.protocol_version = 0x0200;
     g_NetplayRoomState.sync_delay = 0;
     if (isHost)
@@ -336,6 +347,8 @@ void NetplayLanAndroidController::EndSession()
         g_LanNetplaySettings.IsEnabled = false;
         g_LanNetplaySettings.LobbyPhaseOnly = false;
         g_LanNetplaySettings.SkipHostWaitAfterLobby = false;
+        g_LanNetplaySettings.FairPlayNetplay = false;
+        Patch::SetFairPlayLanDisableDiskCheats(false);
         ILanNetplayPlugin::GetInstance().ShutdownLanBootSession();
     }
 
@@ -345,6 +358,13 @@ void NetplayLanAndroidController::EndSession()
         m_guestLanBootHandled = false;
         m_preselectedIsoPath.clear();
         m_v3Chunks.clear();
+        // 优化.md §B：会话结束时清空成员列表缓存，避免下一轮 Lobby 看到上一局
+        // 的残影 ping/side/name。SetCachedUserlist 的"只覆盖更完整"策略要求清空起步。
+        m_cachedUserlist.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_rtChMutex);
+        m_rtChChunks.clear();
     }
     {
         std::lock_guard<std::mutex> lock(m_ackMutex);
@@ -404,6 +424,26 @@ std::vector<LanUserInfo> NetplayLanAndroidController::GetCachedUserlistSnapshot(
     return m_cachedUserlist;
 }
 
+void NetplayLanAndroidController::SetCachedUserlist(const std::vector<LanUserInfo>& users)
+{
+    // 优化.md §B：写回 m_cachedUserlist 让下次 HandleUsernames 的 fallback 合并真正生效。
+    // 历史实现里 m_cachedUserlist 只读不写——shoryu 的 ping_clients 每秒会重新 queue_info()
+    // 一次，若某次 Info 在 UDP 上丢了/序列化得到的 num_players 暂时回落到 1（例如成员还
+    // 没回 Pong 时房主 kick 检测把 m_clientEndpoints 清掉），UI 就会从 [host, guest] 抖
+    // 回到 [host] 单条，体验上即「成员加入后大厅仍空」。
+    // 这里只在收到比缓存更"完整"的列表时才覆盖：以非空 name 的条目数衡量信息量，更少
+    // 名字不会回写——避免上次完整列表被 partial 推送踩平。EndSession 会把缓存清掉。
+    std::lock_guard<std::mutex> lock(m_mutex);
+    int incoming_named = 0;
+    for (const auto& u : users)
+        if (!u.name.empty()) ++incoming_named;
+    int cached_named = 0;
+    for (const auto& u : m_cachedUserlist)
+        if (!u.name.empty()) ++cached_named;
+    if (incoming_named >= cached_named || m_cachedUserlist.empty())
+        m_cachedUserlist = users;
+}
+
 /// 房主 blocking 等待 Start 确认，返回 inputDelay（<0 表示取消；调用方负责把 0 收敛到 >=1）
 int NetplayLanAndroidController::WaitForConfirmation()
 {
@@ -416,8 +456,18 @@ int NetplayLanAndroidController::WaitForConfirmation()
     return m_inputDelay;
 }
 
-void NetplayLanAndroidController::HostConfirmStart(const std::string& isoPath, int inputDelay)
+void NetplayLanAndroidController::HostConfirmStart(const std::string& isoPath, int inputDelay, bool fairPlayNetplay)
 {
+    if (g_LanNetplaySettings.Mode == HostMode)
+    {
+        g_LanNetplaySettings.FairPlayNetplay = fairPlayNetplay;
+        Patch::SetFairPlayLanDisableDiskCheats(fairPlayNetplay);
+    }
+    else
+    {
+        g_LanNetplaySettings.FairPlayNetplay = false;
+        Patch::SetFairPlayLanDisableDiskCheats(false);
+    }
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_inputDelay = inputDelay;
@@ -500,6 +550,22 @@ void NetplayLanAndroidController::OnLanProtocolMessage(const std::string& userna
         // 在后台线程处理 V3，避免阻塞网络回调
         std::thread([this, message]() {
             guestProcessV3Line(message);
+        }).detach();
+        return;
+    }
+
+    if (message.rfind("PS2LAN_CH", 0) == 0)
+    {
+        if (!m_enabled.load() || !g_LanNetplaySettings.IsEnabled)
+            return;
+        if (g_LanNetplaySettings.FairPlayNetplay)
+            return;
+        if (g_LanNetplaySettings.Mode == ObserveMode)
+            return;
+        if (!VMManager::HasValidVM())
+            return;
+        std::thread([this, message]() {
+            processRuntimeCheatChunkLine(message);
         }).detach();
         return;
     }
@@ -636,7 +702,11 @@ void NetplayLanAndroidController::guestApplySessionPayload(const std::string& js
     const std::string crcStr = JsonGetString(jsonStr, "crc");
     const std::string serial = JsonGetString(jsonStr, "serial");
     const bool hostHadCheats = JsonGetBool(jsonStr, "hostHadCheats");
+    const bool fairPlayNetplay = JsonGetBool(jsonStr, "fairPlayNetplay");
     const auto cheatFiles = JsonGetCheatFiles(jsonStr);
+
+    g_LanNetplaySettings.FairPlayNetplay = fairPlayNetplay;
+    Patch::SetFairPlayLanDisableDiskCheats(fairPlayNetplay);
 
     if (crcStr.size() < 8)
     {
@@ -664,8 +734,8 @@ void NetplayLanAndroidController::guestApplySessionPayload(const std::string& js
         const bool sameCrc = GameList::GetSerialAndCRCForFilename(autoPath.c_str(), &sCheck, &cCheck) && cCheck == expectedCrc;
         if (sameCrc)
         {
-            // 落盘 host 下发的 cheats（若有），避免 Kotlin 侧再绕一遍。
-            if (hostHadCheats && !cheatFiles.empty())
+            // 落盘 host 下发的 cheats（若有），公平联机模式下不同步金手指
+            if (!fairPlayNetplay && hostHadCheats && !cheatFiles.empty())
                 NetplayLanAndroidWriteHostCheatFiles(cheatFiles);
 
             // 先提示 UI，但不要标记 guest 已处理；只有 ACK 被房主确认后才能进入 VM。
@@ -736,7 +806,8 @@ void NetplayLanAndroidController::guestApplySessionPayload(const std::string& js
                 if (m_callback)
                     m_callback->SetStatus("Starting game (guest)...");
                 if (m_callback)
-                    m_callback->RequestLaunchGame(autoPath, hostHadCheats || EmuConfig.EnableCheats);
+                    m_callback->RequestLaunchGame(autoPath,
+                        !fairPlayNetplay && (hostHadCheats || EmuConfig.EnableCheats));
             }
             return;
         }
@@ -745,7 +816,7 @@ void NetplayLanAndroidController::guestApplySessionPayload(const std::string& js
     // 未自动匹配到（或 CRC 二次校验失败）：回退到 Kotlin UI 手动选择。
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_callback)
-        m_callback->RequestGuestIsoSelection(expectedCrc, serial, hostHadCheats, cheatFiles);
+        m_callback->RequestGuestIsoSelection(expectedCrc, serial, hostHadCheats, fairPlayNetplay, cheatFiles);
 }
 
 // ===================== pnach 搜索辅助（对齐 Qt NetplayFindCheatPatchFilesOnDisk）=====================
@@ -863,14 +934,19 @@ void NetplayLanAndroidController::hostLaunchGameAfterLobby()
         return;
     }
 
-    // 3. Load cheats
+    // 3. Load cheats（公平联机：不向成员下发任何金手指文件）
     std::vector<std::pair<std::string, std::string>> cheatFiles;
-    const bool hostHad = NetplayLanLoadCheatsForDisc(serial, crc, &cheatFiles);
+    bool hostHad = false;
+    if (!g_LanNetplaySettings.FairPlayNetplay)
+        hostHad = NetplayLanLoadCheatsForDisc(serial, crc, &cheatFiles);
 
     // 4. Build compact JSON manually
     std::string json = "{";
     json += "\"crc\":\"" + fmt::format("{:08X}", crc) + "\",";
     json += "\"serial\":\"" + JsonEscape(serial) + "\",";
+    json += "\"fairPlayNetplay\":";
+    json += g_LanNetplaySettings.FairPlayNetplay ? "true" : "false";
+    json += ",";
     json += "\"hostHadCheats\":";
     json += (hostHad ? "true" : "false");
     json += ",\"files\":[";
@@ -952,7 +1028,145 @@ void NetplayLanAndroidController::hostLaunchGameAfterLobby()
         if (m_callback)
         {
             m_callback->SetStatus("Starting game (host)...");
-            m_callback->RequestLaunchGame(isoPath, hostHad || EmuConfig.EnableCheats);
+            m_callback->RequestLaunchGame(isoPath, !g_LanNetplaySettings.FairPlayNetplay && (hostHad || EmuConfig.EnableCheats));
         }
+    }
+}
+
+static void NetplayLanApplyRuntimePnachUtf8(const std::string& utf8)
+{
+    Host::RunOnCPUThread([utf8]() {
+        if (!VMManager::HasValidVM())
+            return;
+        std::string serial = VMManager::GetDiscSerial();
+        const u32 crc = VMManager::GetDiscCRC();
+        if (serial.empty() || crc == 0)
+            return;
+        const std::string base = fmt::format("{}_{:08X}.pnach", serial, crc);
+        if (!NetplayLanIsSafeBasename(base))
+        {
+            Console.Error("NETPLAY LAN: PS2LAN_CH unsafe basename.");
+            return;
+        }
+        if (!FileSystem::DirectoryExists(EmuFolders::Cheats.c_str()))
+            FileSystem::CreateDirectoryPath(EmuFolders::Cheats.c_str(), true);
+        const std::string full = Path::Combine(EmuFolders::Cheats, base);
+        if (!FileSystem::WriteBinaryFile(full.c_str(), utf8.data(), utf8.size()))
+        {
+            Console.Error("NETPLAY LAN: PS2LAN_CH write pnach failed.");
+            return;
+        }
+        Patch::ReloadPatches(serial, crc, true, true, false, false);
+        Console.WriteLn("NETPLAY LAN: applied runtime cheat pnach from peer.");
+    }, true);
+}
+
+void NetplayLanAndroidController::processRuntimeCheatChunkLine(const std::string& message)
+{
+    if (message.rfind("PS2LAN_CH", 0) != 0)
+        return;
+
+    std::vector<std::string> parts;
+    {
+        std::istringstream ss(message);
+        std::string token;
+        while (std::getline(ss, token, '\t'))
+            parts.push_back(token);
+    }
+    if (parts.size() < 5 || parts[0] != "PS2LAN_CH")
+        return;
+
+    char* end_ptr = nullptr;
+    (void)std::strtoul(parts[1].c_str(), &end_ptr, 10);
+
+    end_ptr = nullptr;
+    const int idx = static_cast<int>(std::strtol(parts[2].c_str(), &end_ptr, 10));
+    end_ptr = nullptr;
+    const int total = static_cast<int>(std::strtol(parts[3].c_str(), &end_ptr, 10));
+    if (total <= 0 || total > 8192 || idx < 0 || idx >= total)
+        return;
+
+    std::string chunk;
+    for (size_t i = 4; i < parts.size(); ++i)
+    {
+        if (i > 4)
+            chunk += '\t';
+        chunk += parts[i];
+    }
+
+    std::string utf8_copy;
+    {
+        std::lock_guard<std::mutex> lk(m_rtChMutex);
+        if (idx == 0)
+            m_rtChChunks.assign(static_cast<size_t>(total), std::string{});
+
+        if (m_rtChChunks.size() != static_cast<size_t>(total))
+            return;
+
+        m_rtChChunks[static_cast<size_t>(idx)] = std::move(chunk);
+
+        for (const auto& c : m_rtChChunks)
+        {
+            if (c.empty())
+                return;
+        }
+
+        std::string b64;
+        for (const auto& c : m_rtChChunks)
+            b64 += c;
+
+        m_rtChChunks.clear();
+
+        const std::string comp = Base64Decode(b64);
+        utf8_copy = ZlibUncompress(comp);
+        if (utf8_copy.empty())
+        {
+            Console.Error("NETPLAY LAN: PS2LAN_CH decompress failed.");
+            return;
+        }
+    }
+
+    NetplayLanApplyRuntimePnachUtf8(utf8_copy);
+}
+
+void NetplayLanAndroidController::BroadcastRuntimeCheatPnachUtf8(const std::string& utf8)
+{
+    if (!m_enabled.load() || !g_LanNetplaySettings.IsEnabled)
+        return;
+    if (g_LanNetplaySettings.FairPlayNetplay)
+        return;
+    if (g_LanNetplaySettings.Mode == ObserveMode)
+        return;
+    if (!VMManager::HasValidVM())
+        return;
+
+    const std::string comp = ZlibCompress(utf8, 7);
+    if (comp.empty())
+    {
+        Console.Error("NETPLAY LAN: PS2LAN_CH compress failed.");
+        return;
+    }
+
+    const std::string b64 = Base64Encode(comp);
+    const uint32_t rev = s_rtChSendRevision.fetch_add(1);
+    const int n = static_cast<int>((b64.size() + kLanV3ChunkSize - 1) / kLanV3ChunkSize);
+    for (int i = 0; i < n; ++i)
+    {
+        const size_t off = static_cast<size_t>(i) * kLanV3ChunkSize;
+        const size_t len = std::min<size_t>(kLanV3ChunkSize, b64.size() - off);
+        std::string line = "PS2LAN_CH\t";
+        line += std::to_string(rev);
+        line += '\t';
+        line += std::to_string(i);
+        line += '\t';
+        line += std::to_string(n);
+        line += '\t';
+        line.append(b64, off, len);
+        ILanNetplayPlugin::GetInstance().SendChatMessage(line);
+    }
+    for (int i = 0; i < 8; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        ILanNetplayPlugin::GetInstance().FlushSend();
     }
 }

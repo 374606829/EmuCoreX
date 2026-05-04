@@ -660,6 +660,8 @@ if(USE_OPENGL)
 		GS/Renderers/OpenGL/GLStreamBuffer.cpp
 		GS/Renderers/OpenGL/GSDeviceOGL.cpp
 		GS/Renderers/OpenGL/GSTextureOGL.cpp
+		GS/Renderers/OpenGL/ReShade/ReShadeFXCompilerGL.cpp
+		GS/Renderers/OpenGL/ReShade/ReShadeChainGL.cpp
 	)
 	list(APPEND pcsx2GSHeaders
 		GS/Renderers/OpenGL/GLContext.h
@@ -669,8 +671,20 @@ if(USE_OPENGL)
 		GS/Renderers/OpenGL/GLStreamBuffer.h
 		GS/Renderers/OpenGL/GSDeviceOGL.h
 		GS/Renderers/OpenGL/GSTextureOGL.h
+		GS/Renderers/OpenGL/ReShade/ReShadeFXCompilerGL.h
+		GS/Renderers/OpenGL/ReShade/ReShadeChainGL.h
 	)
-	target_link_libraries(PCSX2_FLAGS INTERFACE glad)
+	target_link_libraries(PCSX2_FLAGS INTERFACE glad reshadefx_static)
+
+	# The preset INI parser is shared with the Vulkan backend (see
+	# `if(USE_VULKAN)` below). When OpenGL is built without Vulkan we have
+	# to compile the parser ourselves; with both backends enabled the
+	# Vulkan branch already adds the same files - de-duplicate to avoid
+	# CMake "duplicate source" warnings.
+	if(NOT USE_VULKAN)
+		list(APPEND pcsx2GSSources GS/Renderers/Vulkan/ReShade/ReShadePresetINI.cpp)
+		list(APPEND pcsx2GSHeaders GS/Renderers/Vulkan/ReShade/ReShadePresetINI.h)
+	endif()
 
 	if(WIN32)
 		list(APPEND pcsx2GSSources GS/Renderers/OpenGL/GLContextWGL.cpp)

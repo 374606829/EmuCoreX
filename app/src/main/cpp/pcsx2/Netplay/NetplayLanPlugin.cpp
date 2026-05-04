@@ -160,6 +160,10 @@ public:
 		}
 
 		// 底层 userlist 不完整时保留缓存中的已知玩家
+		// 优化.md §B：双安卓场景里 ping_clients 每秒会回调一次 m_userlist_handler，
+		// 但中间任何一秒由于 UDP 抖动 / kick 检测把 m_clientEndpoints 清空，都会让本次
+		// usernames 退化成只有 host 的单条。SetCachedUserlist 现在在每次成功合并后
+		// 写回，故 prev 不再恒空——此 fallback 才真正"持久化"住先前的成员条目。
 		const std::vector<LanUserInfo> prev = NetplayLanAndroidController::GetInstance().GetCachedUserlistSnapshot();
 		if (num_players >= 2 && (g_LanNetplaySettings.Mode == HostMode || g_LanNetplaySettings.Mode == ConnectMode))
 		{
@@ -173,6 +177,28 @@ public:
 					if (u.side == s && !u.name.empty()) { lanUsers.push_back(u); break; }
 			}
 		}
+
+		// 关键：把合并后的最终列表回写入控制器缓存。下一次 ping_clients 触发时，
+		// 即便 shoryu 给我们的 usernames 暂时缺失某 side（典型为成员 5s ping 超时被 kick
+		// 又在下一次 Join 重新加入的间隙），我们仍能用上一帧的完整列表把空洞填上。
+		NetplayLanAndroidController::GetInstance().SetCachedUserlist(lanUsers);
+
+		// 双安卓时排查"成员列表不刷新"必须能在 logcat 拿到对端推送链路证据。
+		// 这里打印每次推 UI 的快照和触发点（mode + size + first names），与
+		// JniLanCallbackImpl::SetUserlist 的日志成对出现 → 一眼能看出是 native 没拿到、
+		// 还是 native 已拿到但 UI 没收到（state 不为 Lobby 等）。
+		std::string firstNames;
+		for (size_t i = 0; i < lanUsers.size() && i < 4; ++i)
+		{
+			if (i) firstNames += ',';
+			firstNames += lanUsers[i].name.empty() ? std::string("?") : lanUsers[i].name;
+			firstNames += '@';
+			firstNames += std::to_string(lanUsers[i].side);
+		}
+		Console.WriteLn(
+			"NETPLAY LAN: HandleUsernames mode=%d num_players=%d size=%zu first=[%s]",
+			static_cast<int>(g_LanNetplaySettings.Mode), num_players, lanUsers.size(),
+			firstNames.c_str());
 
 		_callback->SetUserlist(lanUsers, num_players);
 	}
@@ -189,6 +215,23 @@ public:
 		}
 		if (_callback)
 			_callback->AddChatMessage(username, message);
+
+		// 优化.md §B 防御性补丁：双安卓场景里 doc 明确报告"房主侧聊天可见，但成员列表
+		// 仍不刷新"。这意味着 chat 通道（shoryu MessageType::Chat）已通，但 userlist
+		// 通道（MessageType::Info / userlist_handler）某次中断后没有再恢复。
+		// 既然 chat 已经证明对端在线，我们就借势把控制器缓存里的最近一次完整 userlist
+		// 再推一遍 UI——若 cache 空（极端情况下连初始 Info 都没收到）则跳过，避免推空覆盖。
+		const std::vector<LanUserInfo> cached =
+			NetplayLanAndroidController::GetInstance().GetCachedUserlistSnapshot();
+		bool has_named = false;
+		for (const auto& u : cached) { if (!u.name.empty()) { has_named = true; break; } }
+		if (has_named && _callback)
+		{
+			int num_players = _session ? _session->num_players() : 0;
+			if (num_players <= 0)
+				num_players = (g_LanNetplaySettings.NumPlayers > 0) ? g_LanNetplaySettings.NumPlayers : 2;
+			_callback->SetUserlist(cached, num_players);
+		}
 	}
 
 	// ---- ILanNetplayPlugin ----
@@ -343,6 +386,9 @@ public:
 		if (!reuse_existing_session)
 		{
 			_handshake_gate_open = false;
+			// 新一轮 lobby session 启动前清掉上一局留下的 mismatch 标记，
+			// 否则 reconnect 同一类型的不匹配会被当成"已经提示过"而被吃掉。
+			ResetMismatchSignals();
 
 			{
 				recursive_lock lock(_mutex);
@@ -760,11 +806,45 @@ public:
 	}
 
 protected:
+	// 把固定长度的 char[] 字段（带尾部 \0 填充）转成可显示的 std::string。
+	// EmulatorSyncState 的 biosVersion/discId 用 memcpy 写入、不保证以 \0 结束，
+	// 必须按 strnlen 上界 trim，否则 Console/Toast 文案末尾会出现一串 ^@^@。
+	static std::string SyncFieldToString(const char* field, size_t cap)
+	{
+		const size_t len = ::strnlen(field, cap);
+		return std::string(field, len);
+	}
+
+	// 防 Toast 风暴：shoryu 的 join() 每次失败会被 Plugin::Join() 重试 20 次，
+	// 每次都会触发 state_check_handler → CheckSyncStates → OnSyncMismatch。
+	// 这里按 reason 维度去重，仅第一次推 UI；EndSession() / 新 session 创建时复位。
+	std::atomic<bool> _mismatch_signaled_bios{false};
+	std::atomic<bool> _mismatch_signaled_disc{false};
+	std::atomic<bool> _mismatch_signaled_skip{false};
+
+	void ResetMismatchSignals()
+	{
+		_mismatch_signaled_bios.store(false);
+		_mismatch_signaled_disc.store(false);
+		_mismatch_signaled_skip.store(false);
+	}
+
 	bool CheckSyncStates(const EmulatorSyncState& s1, const EmulatorSyncState& s2)
 	{
+		// 优化.md §B：调用方语义统一为「s1 = 本端 _state, s2 = 对端 msg.state」。
+		//   - Host 在 create_recv_handler 调到这里：s1=host 自己, s2=guest（Join 时上行）。
+		//   - Guest 在 join_recv_handler 收 Deny 时调到这里：s1=guest 自己, s2=host（Deny 时下行）。
+		// 因此 OnSyncMismatch 的 (local, peer) 就直接用 (s1, s2) 即可，UI 文案
+		// 在双端都是「本机 = 我自己 / 对端 = 那一头」语义。
 		if (memcmp(s1.biosVersion, s2.biosVersion, sizeof(s1.biosVersion)))
 		{
-			Console.Error("NETPLAY LAN: Bios version mismatch.");
+			const std::string local = SyncFieldToString(s1.biosVersion, sizeof(s1.biosVersion));
+			const std::string peer  = SyncFieldToString(s2.biosVersion, sizeof(s2.biosVersion));
+			Console.Error("NETPLAY LAN: Bios version mismatch. local='%s' peer='%s'",
+				local.c_str(), peer.c_str());
+			bool first = !_mismatch_signaled_bios.exchange(true);
+			if (first && _callback)
+				_callback->OnSyncMismatch("bios", local, peer);
 			return false;
 		}
 		if (memcmp(s1.discId, s2.discId, sizeof(s1.discId)))
@@ -774,16 +854,30 @@ protected:
 			    memcmp(s1.discId, placeholder, sizeof(placeholder) - 1) == 0)
 			{
 				// Soft rejection: lobby vs game race condition, will retry
+				// （此分支不弹 Toast——Lobby/Boot 切换瞬间双端 state 必然短时不一致，
+				//  PC 与现有重试逻辑合作即可在 1~2 秒内自然收敛。）
 			}
 			else
 			{
-				Console.Error("NETPLAY LAN: Disc ID mismatch.");
+				const std::string local = SyncFieldToString(s1.discId, sizeof(s1.discId));
+				const std::string peer  = SyncFieldToString(s2.discId, sizeof(s2.discId));
+				Console.Error("NETPLAY LAN: Disc ID mismatch. local='%s' peer='%s'",
+					local.c_str(), peer.c_str());
+				bool first = !_mismatch_signaled_disc.exchange(true);
+				if (first && _callback)
+					_callback->OnSyncMismatch("disc_id", local, peer);
 			}
 			return false;
 		}
 		if (s1.skipMpeg != s2.skipMpeg)
 		{
-			Console.Error("NETPLAY LAN: SkipMpegHack settings mismatch.");
+			const std::string local = s1.skipMpeg ? "on" : "off";
+			const std::string peer  = s2.skipMpeg ? "on" : "off";
+			Console.Error("NETPLAY LAN: SkipMpegHack settings mismatch. local='%s' peer='%s'",
+				local.c_str(), peer.c_str());
+			bool first = !_mismatch_signaled_skip.exchange(true);
+			if (first && _callback)
+				_callback->OnSyncMismatch("skip_mpeg", local, peer);
 			return false;
 		}
 		return true;
