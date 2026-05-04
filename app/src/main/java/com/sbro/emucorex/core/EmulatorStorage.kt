@@ -17,6 +17,8 @@ object EmulatorStorage {
 
     fun patchesDir(context: Context): File = File(root(context), "patches").apply { mkdirs() }
 
+    fun texturesDir(context: Context): File = File(root(context), "textures").apply { mkdirs() }
+
     fun logDir(context: Context): File = File(root(context), "logs").apply { mkdirs() }
 
     fun backupsDir(context: Context): File = File(root(context), "backups").apply { mkdirs() }

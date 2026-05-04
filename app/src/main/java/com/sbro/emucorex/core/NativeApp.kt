@@ -71,6 +71,8 @@ object NativeApp {
     @JvmStatic external fun endSettingsBatch()
     @JvmStatic external fun setSetting(section: String, key: String, type: String, value: String)
     @JvmStatic external fun getSetting(section: String, key: String, type: String): String?
+    @JvmStatic external fun reloadTextureReplacements()
+    @JvmStatic external fun reloadReShadePreset()
     @JvmStatic external fun onNativeSurfaceCreated()
     @JvmStatic external fun onNativeSurfaceChanged(surface: Surface, width: Int, height: Int)
     @JvmStatic external fun onNativeSurfaceDestroyed()
@@ -90,6 +92,38 @@ object NativeApp {
     @JvmStatic external fun listMemoryCards(): String?
     @JvmStatic external fun createMemoryCard(name: String, type: Int, fileType: Int): Boolean
     @JvmStatic external fun convertIsoToChd(inputIsoPath: String): Int
+
+    // ── LAN 联机 JNI 接口 ──────────────────────────────────────────────────────
+    @JvmStatic external fun lanRegisterCallback(callback: Any?)
+    @JvmStatic external fun lanStartSession(username: String, isHost: Boolean, hostAddress: String, port: Int)
+    @JvmStatic external fun lanStartSessionEx(
+        username: String,
+        isHost: Boolean,
+        hostAddress: String,
+        hostPort: Int,
+        listenPort: Int,
+        observe: Boolean,
+        saveReplay: Boolean,
+        memcardSync: Boolean,
+        clientOnlyDelay: Boolean,
+        readonlyMemcard: Boolean,
+    )
+    @JvmStatic external fun lanEndSession()
+    @JvmStatic external fun lanSendChat(message: String)
+    @JvmStatic external fun lanOnVmStarted()
+    @JvmStatic external fun lanOnVmStopped()
+    @JvmStatic external fun lanHostConfirmStart(isoPath: String, inputDelay: Int, fairPlayNetplay: Boolean)
+    @JvmStatic external fun lanGuestConfirmReady(isoPath: String, enableCheats: Boolean): Boolean
+    @JvmStatic external fun lanGuestCancelReady()
+    @JvmStatic external fun lanIsEnabled(): Boolean
+    /** 本场局域网联机是否勾选了「公平联机」（房主选项）；与帧同步会话是否启用无关。 */
+    @JvmStatic external fun lanFairPlayNetplay(): Boolean
+    @JvmStatic external fun lanIsHost(): Boolean
+    @JvmStatic external fun lanSetInputDelay(delay: Int)
+    @JvmStatic external fun lanBroadcastRuntimeCheatPnach(text: String)
+
+    @JvmStatic external fun readActiveGamePnach(): String
+    @JvmStatic external fun writeActiveGamePnachAndReload(text: String): Boolean
 
     @JvmStatic
     fun parseMemoryCardList(raw: String?): List<NativeMemoryCardInfo> {

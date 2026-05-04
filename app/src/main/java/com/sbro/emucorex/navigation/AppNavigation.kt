@@ -57,6 +57,7 @@ import com.sbro.emucorex.ui.emulation.EmulationScreen
 import com.sbro.emucorex.ui.formats.SupportedFormatsScreen
 import com.sbro.emucorex.ui.home.HomeScreen
 import com.sbro.emucorex.ui.memorycards.MemoryCardManagerScreen
+import com.sbro.emucorex.ui.netplay.LanNetplayScreen
 import com.sbro.emucorex.ui.onboarding.OnboardingScreen
 import com.sbro.emucorex.ui.saves.SaveManagerScreen
 import com.sbro.emucorex.ui.settings.LanguageSettingsScreen
@@ -104,6 +105,9 @@ object OnboardingRoute
 object CatalogSearchRoute
 
 @Serializable
+object LanNetplayRoute
+
+@Serializable
 object SupportedFormatsRoute
 
 @Serializable
@@ -139,11 +143,13 @@ private fun AnimatedContentTransitionScope<NavBackStackEntry>.isRouteTransitioni
 private fun AnimatedContentTransitionScope<NavBackStackEntry>.isPrimaryLevelTransition(): Boolean {
     val fromPrimary = initialState.destination.hasRoute<HomeRoute>() ||
         initialState.destination.hasRoute<CatalogSearchRoute>() ||
+        initialState.destination.hasRoute<LanNetplayRoute>() ||
         initialState.destination.hasRoute<SupportedFormatsRoute>() ||
         initialState.destination.hasRoute<SettingsRoute>() ||
         initialState.destination.hasRoute<AchievementsRoute>()
     val toPrimary = targetState.destination.hasRoute<HomeRoute>() ||
         targetState.destination.hasRoute<CatalogSearchRoute>() ||
+        targetState.destination.hasRoute<LanNetplayRoute>() ||
         targetState.destination.hasRoute<SupportedFormatsRoute>() ||
         targetState.destination.hasRoute<SettingsRoute>() ||
         targetState.destination.hasRoute<AchievementsRoute>()
@@ -299,6 +305,11 @@ fun AppNavigation(
     }
     val navigateCheats: () -> Unit = {
         navController.navigate(SettingsRoute(tab = "cheats")) {
+            launchSingleTop = true
+        }
+    }
+    val navigateNetplay: () -> Unit = {
+        navController.navigate(LanNetplayRoute) {
             launchSingleTop = true
         }
     }
@@ -560,6 +571,7 @@ fun AppNavigation(
                             launchSingleTop = true
                         }
                     },
+                    onNavigateNetplay = navigateNetplay,
                     onLaunchGame = launchGamePickerAction,
                     onLaunchBios = {
                         navController.navigate(EmulationRoute(bootBios = true)) {
@@ -651,6 +663,7 @@ fun AppNavigation(
                             launchSingleTop = true
                         }
                     },
+                    onNavigateNetplay = navigateNetplay,
                     onLaunchGame = launchGamePickerAction
                 ) {
                     CatalogSearchScreen(
@@ -664,17 +677,71 @@ fun AppNavigation(
                 }
             }
 
+            composable<LanNetplayRoute> {
+                AdaptiveShell(
+                    selected = PrimaryDestination.Netplay,
+                    onNavigateHome = {
+                        navController.navigate(HomeRoute) {
+                            launchSingleTop = true
+                            popUpTo(HomeRoute) { inclusive = false }
+                        }
+                    },
+                    onNavigateSearch = {
+                        navController.navigate(CatalogSearchRoute) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateFormats = {
+                        navController.navigate(SupportedFormatsRoute) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateSettings = {
+                        navController.navigate(SettingsRoute()) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateAchievements = {
+                        navController.navigate(AchievementsRoute) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateCheats = navigateCheats,
+                    onNavigateGameSettingsManager = navigateGameSettingsManager,
+                    onNavigateDataTransfer = navigateDataTransfer,
+                    onResetAllSettings = resetAllSettingsAndOpenOnboarding,
+                    onNavigateSaveManager = {
+                        navController.navigate(SaveManagerRoute()) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateMemoryCardManager = navigateMemoryCardManager,
+                    onBackClick = { navController.popBackStack() },
+                    onOpenManageFolders = {
+                        navController.navigate(SettingsRoute(tab = "paths")) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateNetplay = { },
+                    onLaunchGame = launchGamePickerAction
+                ) { openDrawer ->
+                    LanNetplayScreen(
+                        onMenuClick = openDrawer,
+                        onLaunchGame = { isoPath ->
+                            navController.navigate(EmulationRoute(gamePath = isoPath)) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                }
+            }
+
             composable<EmulationRoute> { backStackEntry ->
                 val route = backStackEntry.toRoute<EmulationRoute>()
                 EmulationScreen(
                     gamePath = route.gamePath,
                     bootToBios = route.bootBios,
                     saveSlot = route.saveSlot,
-                    autotestMode = route.autotestMode,
-                    enableEeRecompilerOverride = route.enableEeRecompiler,
-                    enableIopRecompilerOverride = route.enableIopRecompiler,
-                    enableVu0RecompilerOverride = route.enableVu0Recompiler,
-                    enableVu1RecompilerOverride = route.enableVu1Recompiler,
                     restoredAfterProcessDeath = blockRestoredEmulationRoute,
                     onExit = {
                         if (!navController.popBackStack(HomeRoute, inclusive = false)) {
@@ -728,6 +795,7 @@ fun AppNavigation(
                             launchSingleTop = true
                         }
                     },
+                    onNavigateNetplay = navigateNetplay,
                     onLaunchGame = launchGamePickerAction
                 ) {
                     SupportedFormatsScreen(
@@ -778,6 +846,7 @@ fun AppNavigation(
                             launchSingleTop = true
                         }
                     },
+                    onNavigateNetplay = navigateNetplay,
                     onLaunchGame = launchGamePickerAction
                 ) {
                     SettingsScreen(
@@ -846,6 +915,7 @@ fun AppNavigation(
                             launchSingleTop = true
                         }
                     },
+                    onNavigateNetplay = navigateNetplay,
                     onLaunchGame = launchGamePickerAction
                 ) {
                     AchievementsHubScreen(

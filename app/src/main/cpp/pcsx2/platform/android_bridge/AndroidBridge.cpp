@@ -10,6 +10,7 @@
 #include "common/ZipHelpers.h"
 #include "common/Error.h"
 #include "pcsx2/GS.h"
+#include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "pcsx2/AutoTestTTYCapture.h"
 #include "pcsx2/core/runtime/BuildVersion.h"
 #include "pcsx2/VMManager.h"
@@ -41,6 +42,9 @@
 #include "platform/host/Host.h"
 #include "ImGui/FullscreenUI.h"
 #include "SIO/Pad/PadDualshock2.h"
+#include "NetplayHook.h"
+#include "pcsx2/Netplay/NetplayLanAndroidController.h"
+#include "pcsx2/Netplay/NetplayLanSettingsAndroid.h"
 #include "MTGS.h"
 #include "SDL3/SDL.h"
 #include <future>
@@ -1289,6 +1293,23 @@ Java_com_sbro_emucorex_core_NativeApp_setPerformanceOverlayMode(JNIEnv*, jclass,
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_com_sbro_emucorex_core_NativeApp_reloadTextureReplacements(JNIEnv*, jclass)
+{
+	MTGS::RunOnGSThread([]() {
+		if (VMManager::HasValidVM())
+			GSTextureReplacements::ReloadReplacementMap();
+	});
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_sbro_emucorex_core_NativeApp_reloadReShadePreset(JNIEnv*, jclass)
+{
+	// No-op in netplay-only tree (ReShade Vulkan chain not built).
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_com_sbro_emucorex_core_NativeApp_reloadDataRoot(JNIEnv* env, jclass, jstring p_szpath)
 {
     std::string new_path = GetJavaString(env, p_szpath);
@@ -1401,16 +1422,40 @@ static GenericInputBinding AndroidKeyToGeneric(int key) {
 
 static void SetPadButtonState(u32 pad_index, GenericInputBinding generic_key, float value) {
     if (generic_key == GenericInputBinding::Unknown) return;
-    
-    PadBase* pad = Pad::GetPad(pad_index);
-    if (!pad) return;
 
-    const auto& ci = pad->GetInfo();
+    // 联机产品契约：host 独占 pad0(1P)，guest 独占 pad1(2P)。
+    // 安卓 UI（虚拟手柄 / GamepadManager）默认所有源都发 padIndex=0；如果不在这里
+    // 强制改写到独占槽，guest 端会被 Pad::SetControllerState 内的 exclusive 过滤
+    // (controller != *ex → return) 把全部输入静默吃掉——这是“安卓侧无法输入”
+    // 的根因，PC 端因为绑定可同时映射到 pad0/pad1 由 InputManager 双发，所以不暴露此 bug。
+    bool netplay_redirected = false;
+    if (const auto ex = NetplayHook::GetLanExclusiveLocalPadSlot()) {
+        pad_index = *ex;
+        netplay_redirected = true;
+    }
+
+    // 解析 generic_key → bind_index 时优先用目标槽自身的 binding 表；如果该槽尚未
+    // 建立（例如 guest 端 pad1 在首个 OnVSync 前还是 NotConnected），退回到 pad0
+    // 的 layout——联机模式下两端均强制 DS2，binding 序号在两侧完全一致。
+    PadBase* layout_pad = Pad::GetPad(static_cast<u8>(pad_index));
+    if (!layout_pad || layout_pad->GetInfo().bindings.empty()) {
+        layout_pad = Pad::GetPad(static_cast<u8>(0));
+    }
+    if (!layout_pad) return;
+
+    const auto& ci = layout_pad->GetInfo();
     for (u32 i = 0; i < (u32)ci.bindings.size(); i++) {
         if (ci.bindings[i].generic_mapping == generic_key) {
-            pad->Set(i, value);
+            // 必须走 Pad::SetControllerState 而不是 pad->Set ——
+            // 联机激活时它会把输入路由到 NetplayHook::SetPhysicalInput 中间缓冲，
+            // OnVSync 再每帧从该缓冲读出来打包发给远端并写回 PadBase；直接 pad->Set
+            // 既绕过物理缓冲（远端收不到本端按键），又会被 OnVSync 的双清覆盖
+            // （本端按键瞬间被擦除）。单机模式下 SetControllerState 与 pad->Set 等价，
+            // 还顺带补全了 DS2 自动建槽逻辑，对原有路径完全兼容。
+            Pad::SetControllerState(pad_index, i, value);
         }
     }
+    (void)netplay_redirected; // 仅供日志/调试参考，可被编译器消除
 }
 
 static void ResetPadState(u32 pad_index)
@@ -1706,6 +1751,52 @@ Java_com_sbro_emucorex_core_NativeApp_getGameSerial(JNIEnv *env, jclass clazz) {
         return VMManager::GetDiscSerial();
     });
     return env->NewStringUTF(ret.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_sbro_emucorex_core_NativeApp_readActiveGamePnach(JNIEnv* env, jclass)
+{
+    std::string content = RunOnCPUThreadBlocking<std::string>(std::string(), []() -> std::string {
+        if (!VMManager::HasValidVM())
+            return {};
+        std::string serial = VMManager::GetDiscSerial();
+        const u32 crc = VMManager::GetDiscCRC();
+        if (serial.empty() || crc == 0)
+            return {};
+        const std::string base = fmt::format("{}_{:08X}.pnach", serial, crc);
+        const std::string full = Path::Combine(EmuFolders::Cheats, base);
+        std::optional<std::string> opt = FileSystem::ReadFileToString(full.c_str());
+        return opt.value_or(std::string());
+    });
+    return env->NewStringUTF(content.c_str());
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_sbro_emucorex_core_NativeApp_writeActiveGamePnachAndReload(JNIEnv* env, jclass, jstring jtext)
+{
+    const std::string utf8_copy = GetJavaString(env, jtext);
+    const bool ok = RunOnCPUThreadBlocking<bool>(false, [&utf8_copy]() -> bool {
+        if (!VMManager::HasValidVM())
+            return false;
+        std::string serial = VMManager::GetDiscSerial();
+        const u32 crc = VMManager::GetDiscCRC();
+        if (serial.empty() || crc == 0)
+            return false;
+        const std::string base = fmt::format("{}_{:08X}.pnach", serial, crc);
+        if (base.find('/') != std::string::npos || base.find('\\') != std::string::npos ||
+            base.find("..") != std::string::npos)
+            return false;
+        if (!FileSystem::DirectoryExists(EmuFolders::Cheats.c_str()))
+            FileSystem::CreateDirectoryPath(EmuFolders::Cheats.c_str(), true);
+        const std::string full = Path::Combine(EmuFolders::Cheats, base);
+        if (!FileSystem::WriteBinaryFile(full.c_str(), utf8_copy.data(), utf8_copy.size()))
+            return false;
+        Patch::ReloadPatches(serial, crc, true, true, false, false);
+        return true;
+    });
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
@@ -2429,6 +2520,11 @@ Java_com_sbro_emucorex_core_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz,
     if (!VMManager::HasValidVM()) {
         return false;
     }
+	if (g_LanNetplaySettings.FairPlayNetplay)
+	{
+		Console.Warning("(NativeApp::saveStateToSlot) Blocked — Fair LAN netplay is enabled.");
+		return JNI_FALSE;
+	}
 
     bool result = false;
     Host::RunOnCPUThread([p_slot, &result]() {
@@ -2458,6 +2554,11 @@ Java_com_sbro_emucorex_core_NativeApp_loadStateFromSlot(JNIEnv *env, jclass claz
         Console.Warning(fmt::format("(NativeApp::loadStateFromSlot) Ignoring load for slot {} because VM is not valid.", p_slot));
         return false;
     }
+	if (g_LanNetplaySettings.FairPlayNetplay)
+	{
+		Console.Warning("(NativeApp::loadStateFromSlot) Blocked — Fair LAN netplay is enabled.");
+		return JNI_FALSE;
+	}
 
     bool result = false;
     Host::RunOnCPUThread([p_slot, &result]() {

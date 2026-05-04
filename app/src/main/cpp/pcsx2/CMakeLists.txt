@@ -173,6 +173,15 @@ set(pcsx2Sources
 	MMI.cpp
 	MTGS.cpp
 	MTVU.cpp
+	NetplayHook.cpp
+	Netplay/NetplayFileHash.cpp
+	Netplay/NetplayFrameSyncClient.cpp
+	Netplay/NetplayFrameSyncInputHooks.cpp
+	Netplay/NetplayLanAndroidController.cpp
+	Netplay/NetplayLanPlugin.cpp
+	Netplay/NetplayLanUdpRelay.cpp
+	Netplay/NetplayUdpSocket.cpp
+	Netplay/shoryu/zed_net.cpp
 	PrecompiledHeader.cpp
 	R3000A.cpp
 	R3000AInterpreter.cpp
@@ -230,6 +239,18 @@ set(pcsx2Headers
 	Mdec.h
 	MTGS.h
 	MTVU.h
+	NetplayHook.h
+	Netplay/NetplayFileHash.h
+	Netplay/NetplayFrameSyncClient.h
+	Netplay/NetplayFrameSyncInputHooks.h
+	Netplay/NetplayLanAndroidController.h
+	Netplay/NetplayLanEmulatorState.h
+	Netplay/NetplayLanMessage.h
+	Netplay/NetplayLanPlugin.h
+	Netplay/NetplayLanSettingsAndroid.h
+	Netplay/NetplayLanUdpRelay.h
+	Netplay/NetplayRoomStateAndroid.h
+	Netplay/NetplayUdpSocket.h
 	PrecompiledHeader.h
 	R3000A.h
 	R5900OpcodeTables.h
@@ -1195,6 +1216,7 @@ if(ANDROID)
 		CDVD/Linux/IOCtlSrc.cpp
 		${pcsx2LinuxHeaders}
 		platform/android_bridge/AndroidBridge.cpp
+		platform/android_bridge/AndroidLanBridge.cpp
 		../common/Android/JNI.cpp
 	)
 elseif(LINUX)

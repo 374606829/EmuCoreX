@@ -142,6 +142,7 @@ data class OverlayLayoutSnapshot(
     val leftStickSensitivity: Int = 100,
     val rightStickSensitivity: Int = 100,
     val stickSurfaceMode: Boolean = false,
+    val stickToDpadMode: Int = AppPreferences.DEFAULT_STICK_DPAD_MODE,
     val controlLayouts: Map<String, OverlayControlLayout> = AppPreferences.defaultOverlayControlLayouts()
 )
 
@@ -183,6 +184,15 @@ class AppPreferences(private val context: Context) {
         const val DEFAULT_STICK_SENSITIVITY = 100
         const val DEFAULT_GAMEPAD_STICK_DEADZONE = 15
         const val DEFAULT_GAMEPAD_STICK_SENSITIVITY = 100
+
+        // Touch left-stick → D-Pad mapping mode (matches 优化.md §C):
+        //  0 = Analog stick only (legacy default — emit LeftStick* keys only).
+        //  1 = D-Pad only (emit DPad keys based on 8-sector classification, no analog).
+        //  2 = Both (emit analog stick keys + mirror to D-Pad keys; aligns with PC mapping).
+        const val STICK_DPAD_MODE_STICK_ONLY = 0
+        const val STICK_DPAD_MODE_DPAD_ONLY = 1
+        const val STICK_DPAD_MODE_BOTH = 2
+        const val DEFAULT_STICK_DPAD_MODE = STICK_DPAD_MODE_BOTH
         const val COVER_ART_STYLE_DISABLED = -1
         const val COVER_ART_STYLE_DEFAULT = 0
         const val COVER_ART_STYLE_3D = 1
@@ -253,6 +263,9 @@ class AppPreferences(private val context: Context) {
         private val ENABLE_MTVU = booleanPreferencesKey("enable_mtvu")
         private val ENABLE_FAST_CDVD = booleanPreferencesKey("enable_fast_cdvd")
         private val ENABLE_CHEATS = booleanPreferencesKey("enable_cheats")
+        private val LOAD_TEXTURE_REPLACEMENTS = booleanPreferencesKey("load_texture_replacements")
+        private val DUMP_REPLACEABLE_TEXTURES = booleanPreferencesKey("dump_replaceable_textures")
+        private val TEXTURE_ROOT_PATH = stringPreferencesKey("texture_root_path")
         private val HW_DOWNLOAD_MODE = intPreferencesKey("hw_download_mode")
         private val FRAME_SKIP = intPreferencesKey("frame_skip")
         private val SKIP_DUPLICATE_FRAMES = booleanPreferencesKey("skip_duplicate_frames")
@@ -327,6 +340,7 @@ class AppPreferences(private val context: Context) {
         private val LEFT_STICK_SENSITIVITY = intPreferencesKey("left_stick_sensitivity")
         private val RIGHT_STICK_SENSITIVITY = intPreferencesKey("right_stick_sensitivity")
         private val STICK_SURFACE_MODE = booleanPreferencesKey("stick_surface_mode")
+        private val STICK_TO_DPAD_MODE = intPreferencesKey("stick_to_dpad_mode")
         private val CONTROL_LAYOUTS = stringPreferencesKey("control_layouts")
         private val OVERLAY_LAYOUT_VERSION = intPreferencesKey("overlay_layout_version")
     }
@@ -532,6 +546,32 @@ class AppPreferences(private val context: Context) {
         context.dataStore.edit { it[ONBOARDING_COMPLETED] = completed }
     }
 
+    val loadTextureReplacements: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[LOAD_TEXTURE_REPLACEMENTS] ?: false
+    }
+
+    suspend fun setLoadTextureReplacements(enabled: Boolean) {
+        context.dataStore.edit { it[LOAD_TEXTURE_REPLACEMENTS] = enabled }
+    }
+
+    val dumpReplaceableTextures: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[DUMP_REPLACEABLE_TEXTURES] ?: false
+    }
+
+    suspend fun setDumpReplaceableTextures(enabled: Boolean) {
+        context.dataStore.edit { it[DUMP_REPLACEABLE_TEXTURES] = enabled }
+    }
+
+    val textureRootPath: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[TEXTURE_ROOT_PATH]
+    }
+
+    suspend fun setTextureRootPath(path: String?) {
+        context.dataStore.edit { prefs ->
+            if (path.isNullOrBlank()) prefs.remove(TEXTURE_ROOT_PATH) else prefs[TEXTURE_ROOT_PATH] = path
+        }
+    }
+
     val languageTag: Flow<String?> = context.dataStore.data.map { prefs ->
         prefs[LANGUAGE_TAG]
     }
@@ -712,6 +752,7 @@ class AppPreferences(private val context: Context) {
                 leftStickSensitivity = prefs[LEFT_STICK_SENSITIVITY] ?: 100,
                 rightStickSensitivity = prefs[RIGHT_STICK_SENSITIVITY] ?: 100,
                 stickSurfaceMode = prefs[STICK_SURFACE_MODE] ?: false,
+                stickToDpadMode = normalizeStickToDpadMode(prefs[STICK_TO_DPAD_MODE]),
                 controlLayouts = decodeControlLayouts(prefs[CONTROL_LAYOUTS])
             )
         }
@@ -1692,6 +1733,23 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    val stickToDpadMode: Flow<Int> = context.dataStore.data.map { prefs ->
+        normalizeStickToDpadMode(prefs[STICK_TO_DPAD_MODE])
+    }
+
+    suspend fun setStickToDpadMode(mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[STICK_TO_DPAD_MODE] = normalizeStickToDpadMode(mode)
+        }
+    }
+
+    private fun normalizeStickToDpadMode(value: Int?): Int = when (value) {
+        STICK_DPAD_MODE_STICK_ONLY,
+        STICK_DPAD_MODE_DPAD_ONLY,
+        STICK_DPAD_MODE_BOTH -> value
+        else -> DEFAULT_STICK_DPAD_MODE
+    }
+
     suspend fun setControlsLayout(
         dpadX: Float, dpadY: Float,
         lstickX: Float, lstickY: Float,
@@ -1730,6 +1788,7 @@ class AppPreferences(private val context: Context) {
             prefs.remove(LEFT_STICK_SENSITIVITY)
             prefs.remove(RIGHT_STICK_SENSITIVITY)
             prefs.remove(STICK_SURFACE_MODE)
+            prefs.remove(STICK_TO_DPAD_MODE)
             prefs.remove(CONTROL_LAYOUTS)
             prefs[OVERLAY_LAYOUT_VERSION] = CURRENT_OVERLAY_LAYOUT_VERSION
         }
@@ -1872,6 +1931,9 @@ class AppPreferences(private val context: Context) {
             put("trilinearFiltering", prefs[TRILINEAR_FILTERING] ?: GsHackDefaults.TRILINEAR_FILTERING_DEFAULT)
             put("blendingAccuracy", prefs[BLENDING_ACCURACY] ?: GsHackDefaults.BLENDING_ACCURACY_DEFAULT)
             put("texturePreloading", prefs[TEXTURE_PRELOADING] ?: GsHackDefaults.TEXTURE_PRELOADING_DEFAULT)
+            put("loadTextureReplacements", prefs[LOAD_TEXTURE_REPLACEMENTS] ?: false)
+            put("dumpReplaceableTextures", prefs[DUMP_REPLACEABLE_TEXTURES] ?: false)
+            put("textureRootPath", prefs[TEXTURE_ROOT_PATH])
             put("enableFxaa", prefs[ENABLE_FXAA] ?: false)
             put("casMode", prefs[CAS_MODE] ?: 0)
             put("casSharpness", prefs[CAS_SHARPNESS] ?: 50)
@@ -1926,6 +1988,7 @@ class AppPreferences(private val context: Context) {
             put("leftStickSensitivity", prefs[LEFT_STICK_SENSITIVITY] ?: 100)
             put("rightStickSensitivity", prefs[RIGHT_STICK_SENSITIVITY] ?: 100)
             put("stickSurfaceMode", prefs[STICK_SURFACE_MODE] ?: false)
+            put("stickToDpadMode", prefs[STICK_TO_DPAD_MODE] ?: DEFAULT_STICK_DPAD_MODE)
             put("controlLayouts", prefs[CONTROL_LAYOUTS])
             put("memoryCardSlot1", prefs[MEMORY_CARD_SLOT1])
             put("memoryCardSlot2", prefs[MEMORY_CARD_SLOT2])
@@ -1990,6 +2053,9 @@ class AppPreferences(private val context: Context) {
             prefs[TRILINEAR_FILTERING] = json.optInt("trilinearFiltering", GsHackDefaults.TRILINEAR_FILTERING_DEFAULT).coerceIn(0, 3)
             prefs[BLENDING_ACCURACY] = json.optInt("blendingAccuracy", GsHackDefaults.BLENDING_ACCURACY_DEFAULT).coerceIn(0, 5)
             prefs[TEXTURE_PRELOADING] = json.optInt("texturePreloading", GsHackDefaults.TEXTURE_PRELOADING_DEFAULT).coerceIn(0, 2)
+            prefs[LOAD_TEXTURE_REPLACEMENTS] = json.optBoolean("loadTextureReplacements", false)
+            prefs[DUMP_REPLACEABLE_TEXTURES] = json.optBoolean("dumpReplaceableTextures", false)
+            json.optString("textureRootPath").takeIf { it.isNotBlank() }?.let { prefs[TEXTURE_ROOT_PATH] = it } ?: prefs.remove(TEXTURE_ROOT_PATH)
             prefs[ENABLE_FXAA] = json.optBoolean("enableFxaa", false)
             prefs[CAS_MODE] = json.optInt("casMode", 0).coerceIn(0, 2)
             prefs[CAS_SHARPNESS] = json.optInt("casSharpness", 50).coerceIn(0, 100)
@@ -2057,6 +2123,9 @@ class AppPreferences(private val context: Context) {
             prefs[LEFT_STICK_SENSITIVITY] = json.optInt("leftStickSensitivity", 100).coerceIn(50, 200)
             prefs[RIGHT_STICK_SENSITIVITY] = json.optInt("rightStickSensitivity", 100).coerceIn(50, 200)
             prefs[STICK_SURFACE_MODE] = json.optBoolean("stickSurfaceMode", false)
+            prefs[STICK_TO_DPAD_MODE] = normalizeStickToDpadMode(
+                json.optInt("stickToDpadMode", DEFAULT_STICK_DPAD_MODE)
+            )
             json.optString("controlLayouts").takeIf { it.isNotBlank() }?.let { prefs[CONTROL_LAYOUTS] = it } ?: prefs.remove(CONTROL_LAYOUTS)
             json.optString("memoryCardSlot1").takeIf { it.isNotBlank() }?.let { prefs[MEMORY_CARD_SLOT1] = it } ?: prefs.remove(MEMORY_CARD_SLOT1)
             json.optString("memoryCardSlot2").takeIf { it.isNotBlank() }?.let { prefs[MEMORY_CARD_SLOT2] = it } ?: prefs.remove(MEMORY_CARD_SLOT2)

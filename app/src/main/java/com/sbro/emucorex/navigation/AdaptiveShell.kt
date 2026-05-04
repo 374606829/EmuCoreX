@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tune
@@ -70,7 +71,7 @@ import com.sbro.emucorex.ui.common.rememberDebouncedClick
 import kotlinx.coroutines.launch
 
 enum class PrimaryDestination {
-    Home, Search, Formats, Achievements, Settings
+    Home, Search, Formats, Achievements, Settings, Netplay
 }
 
 private enum class MobileLeadingAction {
@@ -98,6 +99,7 @@ fun AdaptiveShell(
     onNavigateMemoryCardManager: (() -> Unit)? = null,
     onBackClick: (() -> Unit)? = null,
     onOpenManageFolders: (() -> Unit)? = null,
+    onNavigateNetplay: () -> Unit = {},
     onLaunchGame: (() -> Unit)? = null,
     onLaunchBios: (() -> Unit)? = null,
     content: @Composable ((() -> Unit)?) -> Unit
@@ -117,6 +119,7 @@ fun AdaptiveShell(
             onNavigateSaveManager = onNavigateSaveManager,
             onNavigateMemoryCardManager = onNavigateMemoryCardManager,
             onOpenManageFolders = onOpenManageFolders,
+            onNavigateNetplay = onNavigateNetplay,
             onLaunchGame = onLaunchGame,
             onLaunchBios = onLaunchBios,
             onCloseDrawer = { }
@@ -166,6 +169,7 @@ fun AdaptiveShell(
             onNavigateMemoryCardManager = onNavigateMemoryCardManager,
             onBackClick = onBackClick,
             onOpenManageFolders = onOpenManageFolders,
+            onNavigateNetplay = onNavigateNetplay,
             onLaunchGame = onLaunchGame,
             onLaunchBios = onLaunchBios,
             content = content
@@ -193,6 +197,7 @@ private fun CompactAdaptiveShell(
     onNavigateMemoryCardManager: (() -> Unit)?,
     onBackClick: (() -> Unit)?,
     onOpenManageFolders: (() -> Unit)?,
+    onNavigateNetplay: () -> Unit,
     onLaunchGame: (() -> Unit)?,
     onLaunchBios: (() -> Unit)?,
     content: @Composable ((() -> Unit)?) -> Unit
@@ -288,6 +293,7 @@ private fun CompactAdaptiveShell(
                     onNavigateSaveManager = onNavigateSaveManager,
                     onNavigateMemoryCardManager = onNavigateMemoryCardManager,
                     onOpenManageFolders = onOpenManageFolders,
+                    onNavigateNetplay = onNavigateNetplay,
                     onLaunchGame = onLaunchGame,
                     onLaunchBios = onLaunchBios,
                     selectedItemFocusRequester = selectedDrawerItemFocusRequester,
@@ -342,6 +348,7 @@ private fun SideNavigation(
     onNavigateFormats: () -> Unit,
     onNavigateSettings: () -> Unit,
     onNavigateAchievements: () -> Unit,
+    onNavigateNetplay: () -> Unit,
     onNavigateCheats: (() -> Unit)?,
     onNavigateGameSettingsManager: (() -> Unit)?,
     onNavigateDataTransfer: (() -> Unit)?,
@@ -411,6 +418,10 @@ private fun SideNavigation(
         onCloseDrawer()
         onNavigateSearch()
     }
+    val navigateNetplay = rememberDebouncedClick {
+        onCloseDrawer()
+        onNavigateNetplay()
+    }
     val openManageFolders = onOpenManageFolders?.let {
         rememberDebouncedClick {
             onCloseDrawer()
@@ -472,6 +483,15 @@ private fun SideNavigation(
                     Modifier.focusRequester(selectedItemFocusRequester)
                 } else Modifier,
                 onClick = navigateSearch
+            )
+            ShellItem(
+                icon = Icons.Rounded.SportsEsports,
+                label = stringResource(R.string.shell_lan_netplay),
+                selected = selected == PrimaryDestination.Netplay,
+                modifier = if (selected == PrimaryDestination.Netplay && selectedItemFocusRequester != null) {
+                    Modifier.focusRequester(selectedItemFocusRequester)
+                } else Modifier,
+                onClick = navigateNetplay
             )
             ShellItem(
                 icon = Icons.Rounded.Star,

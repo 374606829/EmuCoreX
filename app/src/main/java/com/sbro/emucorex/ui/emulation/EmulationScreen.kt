@@ -52,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ExitToApp
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Gamepad
 import androidx.compose.material.icons.rounded.LockOpen
@@ -70,6 +71,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -160,6 +162,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 private object PadKey {
     const val UP = 19
@@ -267,11 +270,6 @@ fun EmulationScreen(
     gamePath: String? = null,
     bootToBios: Boolean = false,
     saveSlot: Int? = null,
-    autotestMode: Boolean = false,
-    enableEeRecompilerOverride: Boolean? = null,
-    enableIopRecompilerOverride: Boolean? = null,
-    enableVu0RecompilerOverride: Boolean? = null,
-    enableVu1RecompilerOverride: Boolean? = null,
     restoredAfterProcessDeath: Boolean = false,
     onExit: () -> Unit,
     viewModel: EmulationViewModel = viewModel()
@@ -360,6 +358,17 @@ fun EmulationScreen(
         toggleMenuClick()
     }
 
+    LaunchedEffect(uiState.isRunning) {
+        if (!uiState.isRunning) {
+            viewModel.refreshLanNetplayRestrictFlag()
+            return@LaunchedEffect
+        }
+        while (true) {
+            viewModel.refreshLanNetplayRestrictFlag()
+            delay(900)
+        }
+    }
+
     LaunchedEffect(restoredAfterProcessDeath) {
         if (!restoredAfterProcessDeath) return@LaunchedEffect
         Toast.makeText(
@@ -427,27 +436,9 @@ fun EmulationScreen(
         }
     }
 
-    LaunchedEffect(
-        gamePath,
-        bootToBios,
-        autotestMode,
-        enableEeRecompilerOverride,
-        enableIopRecompilerOverride,
-        enableVu0RecompilerOverride,
-        enableVu1RecompilerOverride,
-        restoredAfterProcessDeath
-    ) {
+    LaunchedEffect(gamePath, bootToBios, restoredAfterProcessDeath) {
         if (restoredAfterProcessDeath) return@LaunchedEffect
-        viewModel.startEmulation(
-            path = gamePath,
-            slotToLoad = saveSlot,
-            bootToBios = bootToBios,
-            autotestMode = autotestMode,
-            enableEeRecompilerOverride = enableEeRecompilerOverride,
-            enableIopRecompilerOverride = enableIopRecompilerOverride,
-            enableVu0RecompilerOverride = enableVu0RecompilerOverride,
-            enableVu1RecompilerOverride = enableVu1RecompilerOverride
-        )
+        viewModel.startEmulation(gamePath, saveSlot, bootToBios)
     }
 
     LaunchedEffect(gamepadConnected, uiState.showMenu) {
@@ -724,9 +715,15 @@ fun EmulationScreen(
                 "saved" -> stringResource(R.string.emulation_saved)
                 "loaded" -> stringResource(R.string.emulation_loaded)
                 "load_failed" -> stringResource(R.string.emulation_load_failed)
+                "lan_netplay_savestates_locked" -> stringResource(R.string.emulation_lan_netplay_savestates_locked)
+                "lan_netplay_turbo_locked" -> stringResource(R.string.emulation_lan_netplay_turbo_locked)
+                "lan_netplay_resume_blocked" -> stringResource(R.string.emulation_lan_netplay_resume_blocked)
                 "bios_missing" -> stringResource(R.string.emulation_bios_missing)
                 "launch_failed" -> stringResource(R.string.emulation_launch_failed)
                 "launch_path_error" -> stringResource(R.string.emulation_launch_path_error)
+                "emulation_edit_cheats_saved" -> stringResource(R.string.emulation_edit_cheats_saved)
+                "emulation_edit_cheats_failed" -> stringResource(R.string.emulation_edit_cheats_failed)
+                "emulation_edit_cheats_no_vm" -> stringResource(R.string.emulation_edit_cheats_no_vm)
                 else -> ""
             }
             Box(
@@ -870,6 +867,7 @@ fun EmulationScreen(
                 leftStickSensitivity = uiState.leftStickSensitivity / 100f,
                 rightStickSensitivity = uiState.rightStickSensitivity / 100f,
                 stickSurfaceMode = uiState.stickSurfaceMode,
+                leftStickDpadMode = uiState.stickToDpadMode,
                 dpadOffset = uiState.dpadOffset,
                 lstickOffset = uiState.lstickOffset,
                 rstickOffset = uiState.rstickOffset,
@@ -945,6 +943,7 @@ fun EmulationScreen(
                     onSetStickScale = { viewModel.setStickScale(it) },
                     onSetLeftStickSensitivity = { viewModel.setLeftStickSensitivity(it) },
                     onSetRightStickSensitivity = { viewModel.setRightStickSensitivity(it) },
+                    onSetStickToDpadMode = { viewModel.setStickToDpadMode(it) },
                     onSetGamepadStickDeadzone = { viewModel.setGamepadStickDeadzone(it) },
                     onSetGamepadLeftStickSensitivity = { viewModel.setGamepadLeftStickSensitivity(it) },
                     onSetGamepadRightStickSensitivity = { viewModel.setGamepadRightStickSensitivity(it) },
@@ -958,6 +957,7 @@ fun EmulationScreen(
                     onSetFastCdvd = { viewModel.setFastCdvd(it) },
                     onSetEnableCheats = { viewModel.setEnableCheats(it) },
                     onOpenCheats = { showCheatsDialog = true },
+                    onOpenRuntimePnachEditor = { viewModel.openRuntimePnachEditor() },
                     onSetHwDownloadMode = { viewModel.setHwDownloadMode(it) },
                     onSetFrameSkip = { viewModel.setFrameSkip(it) },
                     onSetSkipDuplicateFrames = { viewModel.setSkipDuplicateFrames(it) },
@@ -1147,6 +1147,35 @@ fun EmulationScreen(
             confirmButton = {
                 TextButton(onClick = dismissCheatsDialogClick) {
                     Text(stringResource(android.R.string.ok))
+                }
+            }
+        )
+    }
+
+    if (uiState.showRuntimePnachEditor) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissRuntimePnachEditor() },
+            title = { Text(stringResource(R.string.emulation_edit_cheats_dialog_title)) },
+            text = {
+                OutlinedTextField(
+                    value = uiState.runtimePnachDraft,
+                    onValueChange = { viewModel.setRuntimePnachDraft(it) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 360.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    maxLines = 18,
+                    singleLine = false
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.saveRuntimePnachDraft() }) {
+                    Text(stringResource(R.string.settings_cheats_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissRuntimePnachEditor() }) {
+                    Text(stringResource(android.R.string.cancel))
                 }
             }
         )
@@ -1374,6 +1403,7 @@ private fun OnScreenControls(
     leftStickSensitivity: Float = 1.0f,
     rightStickSensitivity: Float = 1.0f,
     stickSurfaceMode: Boolean = false,
+    leftStickDpadMode: Int = AppPreferences.STICK_DPAD_MODE_STICK_ONLY,
     dpadOffset: Pair<Float, Float>,
     lstickOffset: Pair<Float, Float>,
     rstickOffset: Pair<Float, Float>,
@@ -1461,7 +1491,15 @@ private fun OnScreenControls(
 
         val dpadSpecs = runtimeSpecs(layout.dpadButtons)
         if (dpadSpecs.isNotEmpty()) {
-            TouchButtonGroup(specs = dpadSpecs)
+            if (isStandardFourWayDpadSpecs(dpadSpecs)) {
+                TouchEightWayDpad(
+                    specs = dpadSpecs,
+                    sensitivity = leftStickSensitivity,
+                    onPadInput = onPadInput
+                )
+            } else {
+                TouchButtonGroup(specs = dpadSpecs)
+            }
         }
 
         layout.leftStick?.takeIf { it.visible }?.let { stick ->
@@ -1477,6 +1515,11 @@ private fun OnScreenControls(
                         rightKey = PadKey.LEFT_STICK_RIGHT,
                         downKey = PadKey.LEFT_STICK_DOWN,
                         leftKey = PadKey.LEFT_STICK_LEFT,
+                        dpadMode = leftStickDpadMode,
+                        dpadUpKey = PadKey.UP,
+                        dpadRightKey = PadKey.RIGHT,
+                        dpadDownKey = PadKey.DOWN,
+                        dpadLeftKey = PadKey.LEFT,
                         onPadInput = onPadInput
                     )
                 },
@@ -1654,10 +1697,234 @@ private fun TouchButtonGroup(
     }
 }
 
+// Lower bound of |x| or |y| (after scaling) at which the corresponding D-Pad
+// direction is considered pressed. sin(22.5°) ≈ 0.3827 gives us proper 8-sector
+// coverage: pure cardinal directions stay on a single key, while ±45° (and
+// ±67.5°) diagonals press two adjacent keys simultaneously, mirroring how the
+// hardware D-Pad is read on the PS2.
+private const val STICK_DPAD_AXIS_THRESHOLD = 0.3827f
+// Minimum stick magnitude before any D-Pad press is emitted; prevents jitter
+// near the deadzone from generating spurious key events.
+private const val STICK_DPAD_MAGNITUDE_THRESHOLD = 0.45f
+
+/**
+ * PS2-style D-Pad "hat": up to two cardinals at once (diagonals), same thresholds as
+ * [updateAnalogStick]'s D-Pad branch — used by the standalone on-screen cross and by the left stick.
+ * [hatX] / [hatY] must match the same normalization as [updateAnalogStick]'s `scaledX` / `scaledY` (incl. sensitivity).
+ */
+private fun emitDpadEightWayHat(
+    hatX: Float,
+    hatY: Float,
+    dpadUpKey: Int,
+    dpadRightKey: Int,
+    dpadDownKey: Int,
+    dpadLeftKey: Int,
+    onPadInput: (Int, Int, Boolean) -> Unit
+) {
+    val magnitude = sqrt(hatX * hatX + hatY * hatY)
+    val active = magnitude >= STICK_DPAD_MAGNITUDE_THRESHOLD
+    val dpadRight = active && hatX > STICK_DPAD_AXIS_THRESHOLD
+    val dpadLeft = active && hatX < -STICK_DPAD_AXIS_THRESHOLD
+    val dpadDown = active && hatY > STICK_DPAD_AXIS_THRESHOLD
+    val dpadUp = active && hatY < -STICK_DPAD_AXIS_THRESHOLD
+    onPadInput(dpadUpKey, 0, dpadUp)
+    onPadInput(dpadRightKey, 0, dpadRight)
+    onPadInput(dpadDownKey, 0, dpadDown)
+    onPadInput(dpadLeftKey, 0, dpadLeft)
+}
+
+private fun isStandardFourWayDpadSpecs(specs: List<TouchButtonSpec>): Boolean =
+    specs.size == 4 &&
+        specs.map { it.id }.toSet() ==
+        setOf("dpad_up", "dpad_down", "dpad_left", "dpad_right")
+
+private data class DpadEightHatPress(
+    val up: Boolean,
+    val right: Boolean,
+    val down: Boolean,
+    val left: Boolean
+)
+
+/** Same hysteresis / sector split as the left-stick D-Pad emission (dual cardinals at diagonals). */
+private fun dpadEightHatPressStates(hatX: Float, hatY: Float): DpadEightHatPress {
+    val magnitude = sqrt(hatX * hatX + hatY * hatY)
+    val active = magnitude >= STICK_DPAD_MAGNITUDE_THRESHOLD
+    return DpadEightHatPress(
+        up = active && hatY < -STICK_DPAD_AXIS_THRESHOLD,
+        right = active && hatX > STICK_DPAD_AXIS_THRESHOLD,
+        down = active && hatY > STICK_DPAD_AXIS_THRESHOLD,
+        left = active && hatX < -STICK_DPAD_AXIS_THRESHOLD
+    )
+}
+
+/**
+ * Cross-shaped **D-Pad overlay**: bounding box acts as one touch surface mapped to −1…1 vs centre,
+ * then fed through [emitDpadEightWayHat] — same diagonal behaviour as the analogue stick mirror path.
+ */
+@SuppressLint("ComposableNaming")
+@Composable
+private fun TouchEightWayDpad(
+    specs: List<TouchButtonSpec>,
+    sensitivity: Float,
+    onPadInput: (Int, Int, Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    check(isStandardFourWayDpadSpecs(specs))
+    val density = LocalDensity.current
+    val pointerTouches = remember { mutableStateMapOf<Int, Pair<Float, Float>>() }
+    val groupRect = remember(specs, density) {
+        with(density) {
+            val rects = specs.map { spec ->
+                Rect(
+                    left = spec.x.toPx(),
+                    top = spec.y.toPx(),
+                    right = spec.x.toPx() + spec.width.toPx(),
+                    bottom = spec.y.toPx() + spec.height.toPx()
+                )
+            }
+            Rect(
+                left = rects.minOf { it.left },
+                top = rects.minOf { it.top },
+                right = rects.maxOf { it.right },
+                bottom = rects.maxOf { it.bottom }
+            )
+        }
+    }
+    val groupWidth = with(density) { (groupRect.right - groupRect.left).coerceAtLeast(0f).toDp() }
+    val groupHeight = with(density) { (groupRect.bottom - groupRect.top).coerceAtLeast(0f).toDp() }
+
+    fun normsFromPointerLocal(px: Float, py: Float): Pair<Float, Float>? {
+        val w = groupRect.right - groupRect.left
+        val h = groupRect.bottom - groupRect.top
+        if (w < 8f || h < 8f) return null
+        if (px < -12f || py < -12f || px > w + 12f || py > h + 12f) return null
+        val nx = (px - w * 0.5f) / (w * 0.5f).coerceAtLeast(1f)
+        val ny = (py - h * 0.5f) / (h * 0.5f).coerceAtLeast(1f)
+        return nx.coerceIn(-1f, 1f) to ny.coerceIn(-1f, 1f)
+    }
+
+    fun hatEmitterAvg() {
+        if (pointerTouches.isEmpty()) {
+            emitDpadEightWayHat(0f, 0f, PadKey.UP, PadKey.RIGHT, PadKey.DOWN, PadKey.LEFT, onPadInput)
+            return
+        }
+        var ax = 0f
+        var ay = 0f
+        for ((rx, ry) in pointerTouches.values) {
+            ax += rx
+            ay += ry
+        }
+        val n = pointerTouches.size
+        val sens = sensitivity.coerceIn(0.5f, 2f)
+        val hx = ((ax / n) * sens).coerceIn(-1f, 1f)
+        val hy = ((ay / n) * sens).coerceIn(-1f, 1f)
+        emitDpadEightWayHat(hx, hy, PadKey.UP, PadKey.RIGHT, PadKey.DOWN, PadKey.LEFT, onPadInput)
+    }
+
+    val glyphPress =
+        if (pointerTouches.isEmpty()) {
+            DpadEightHatPress(up = false, right = false, down = false, left = false)
+        } else {
+            var sx = 0f
+            var sy = 0f
+            for ((rx, ry) in pointerTouches.values) {
+                sx += rx
+                sy += ry
+            }
+            val sens = sensitivity.coerceIn(0.5f, 2f)
+            val cx = sens * (sx / pointerTouches.size.toFloat())
+            val cy = sens * (sy / pointerTouches.size.toFloat())
+            dpadEightHatPressStates(
+                cx.coerceIn(-1f, 1f),
+                cy.coerceIn(-1f, 1f)
+            )
+        }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            emitDpadEightWayHat(0f, 0f, PadKey.UP, PadKey.RIGHT, PadKey.DOWN, PadKey.LEFT, onPadInput)
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .offset {
+                IntOffset(groupRect.left.roundToInt(), groupRect.top.roundToInt())
+            }
+            .size(groupWidth, groupHeight)
+            .pointerInteropFilter { event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                        val index = event.actionIndex
+                        val pointerId = event.getPointerId(index)
+                        normsFromPointerLocal(event.getX(index), event.getY(index))?.let {
+                            pointerTouches[pointerId] = it
+                            hatEmitterAvg()
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        for (idx in 0 until event.pointerCount) {
+                            val pointerId = event.getPointerId(idx)
+                            val nx = normsFromPointerLocal(event.getX(idx), event.getY(idx))
+                            if (nx != null) {
+                                pointerTouches[pointerId] = nx
+                            } else {
+                                pointerTouches.remove(pointerId)
+                            }
+                        }
+                        hatEmitterAvg()
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                        pointerTouches.remove(event.getPointerId(event.actionIndex))
+                        hatEmitterAvg()
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        pointerTouches.clear()
+                        hatEmitterAvg()
+                        true
+                    }
+                    else -> false
+                }
+            }
+    ) {
+        specs.forEach { spec ->
+            val pressed = when (spec.id) {
+                "dpad_up" -> glyphPress.up
+                "dpad_down" -> glyphPress.down
+                "dpad_left" -> glyphPress.left
+                "dpad_right" -> glyphPress.right
+                else -> false
+            }
+            VectorOverlayButton(
+                drawableRes = spec.drawableRes,
+                width = spec.width,
+                height = spec.height,
+                shape = spec.shape,
+                interactive = false,
+                pressed = pressed,
+                modifier = Modifier.offset {
+                    IntOffset(
+                        (spec.x.roundToPx() - groupRect.left.roundToInt()),
+                        (spec.y.roundToPx() - groupRect.top.roundToInt())
+                    )
+                }
+            )
+        }
+    }
+}
+
 private fun updateAnalogStick(
     x: Float, y: Float,
     sensitivity: Float = 1f,
     upKey: Int, rightKey: Int, downKey: Int, leftKey: Int,
+    dpadMode: Int = AppPreferences.STICK_DPAD_MODE_STICK_ONLY,
+    dpadUpKey: Int = PadKey.UP,
+    dpadRightKey: Int = PadKey.RIGHT,
+    dpadDownKey: Int = PadKey.DOWN,
+    dpadLeftKey: Int = PadKey.LEFT,
     onPadInput: (Int, Int, Boolean) -> Unit
 ) {
     val scaledX = (x * sensitivity.coerceIn(0.5f, 2f)).coerceIn(-1f, 1f)
@@ -1666,10 +1933,35 @@ private fun updateAnalogStick(
     val left = ((-scaledX).coerceAtLeast(0f) * 255f).roundToInt()
     val down = (scaledY.coerceAtLeast(0f) * 255f).roundToInt()
     val up = ((-scaledY).coerceAtLeast(0f) * 255f).roundToInt()
-    onPadInput(upKey, up, up > 0)
-    onPadInput(rightKey, right, right > 0)
-    onPadInput(downKey, down, down > 0)
-    onPadInput(leftKey, left, left > 0)
+
+    val emitAnalog = dpadMode != AppPreferences.STICK_DPAD_MODE_DPAD_ONLY
+    val emitDpad = dpadMode != AppPreferences.STICK_DPAD_MODE_STICK_ONLY
+
+    if (emitAnalog) {
+        onPadInput(upKey, up, up > 0)
+        onPadInput(rightKey, right, right > 0)
+        onPadInput(downKey, down, down > 0)
+        onPadInput(leftKey, left, left > 0)
+    } else {
+        // Release any previously-held analog "buttons" so the emulator does not
+        // see a stale half-axis press when switching modes mid-session.
+        onPadInput(upKey, 0, false)
+        onPadInput(rightKey, 0, false)
+        onPadInput(downKey, 0, false)
+        onPadInput(leftKey, 0, false)
+    }
+
+    if (emitDpad) {
+        emitDpadEightWayHat(
+            hatX = scaledX,
+            hatY = scaledY,
+            dpadUpKey = dpadUpKey,
+            dpadRightKey = dpadRightKey,
+            dpadDownKey = dpadDownKey,
+            dpadLeftKey = dpadLeftKey,
+            onPadInput = onPadInput
+        )
+    }
 }
 
 @Composable
@@ -1699,6 +1991,7 @@ private fun EmulationSidebarMenu(
     onSetStickScale: (Int) -> Unit,
     onSetLeftStickSensitivity: (Int) -> Unit,
     onSetRightStickSensitivity: (Int) -> Unit,
+    onSetStickToDpadMode: (Int) -> Unit,
     onSetGamepadStickDeadzone: (Int) -> Unit,
     onSetGamepadLeftStickSensitivity: (Int) -> Unit,
     onSetGamepadRightStickSensitivity: (Int) -> Unit,
@@ -1712,6 +2005,7 @@ private fun EmulationSidebarMenu(
     onSetFastCdvd: (Boolean) -> Unit,
     onSetEnableCheats: (Boolean) -> Unit,
     onOpenCheats: () -> Unit,
+    onOpenRuntimePnachEditor: () -> Unit,
     onSetHwDownloadMode: (Int) -> Unit,
     onSetFrameSkip: (Int) -> Unit,
     onSetSkipDuplicateFrames: (Boolean) -> Unit,
@@ -1925,7 +2219,7 @@ private fun EmulationSidebarMenu(
                                     icon = Icons.Rounded.Save,
                                     contentDescription = stringResource(R.string.emulation_quick_save_desc),
                                     onClick = onQuickSave,
-                                    enabled = !uiState.isActionInProgress,
+                                    enabled = !uiState.isActionInProgress && !uiState.lanNetplayRestrictFeatures,
                                     showProgress = uiState.actionLabel == "saving",
                                     containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
                                 )
@@ -1935,7 +2229,7 @@ private fun EmulationSidebarMenu(
                                     icon = Icons.Rounded.Restore,
                                     contentDescription = stringResource(R.string.emulation_quick_load_desc),
                                     onClick = onQuickLoad,
-                                    enabled = !uiState.isActionInProgress,
+                                    enabled = !uiState.isActionInProgress && !uiState.lanNetplayRestrictFeatures,
                                     showProgress = uiState.actionLabel == "loading",
                                     containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
                                 )
@@ -2090,6 +2384,28 @@ private fun EmulationSidebarMenu(
                             onResetToDefault = { onSetLeftStickSensitivity(AppPreferences.DEFAULT_STICK_SENSITIVITY) }
                         )
 
+                        LiveSelectionRow(
+                            title = stringResource(R.string.settings_left_stick_dpad_mode),
+                            options = listOf(
+                                LiveSelectionOption(
+                                    AppPreferences.STICK_DPAD_MODE_STICK_ONLY,
+                                    stringResource(R.string.settings_left_stick_dpad_mode_stick_only)
+                                ),
+                                LiveSelectionOption(
+                                    AppPreferences.STICK_DPAD_MODE_DPAD_ONLY,
+                                    stringResource(R.string.settings_left_stick_dpad_mode_dpad_only)
+                                ),
+                                LiveSelectionOption(
+                                    AppPreferences.STICK_DPAD_MODE_BOTH,
+                                    stringResource(R.string.settings_left_stick_dpad_mode_both)
+                                )
+                            ),
+                            currentValue = uiState.stickToDpadMode,
+                            onValueChange = onSetStickToDpadMode,
+                            helpText = stringResource(R.string.settings_help_left_stick_dpad_mode),
+                            onResetToDefault = { onSetStickToDpadMode(AppPreferences.DEFAULT_STICK_DPAD_MODE) }
+                        )
+
                         LiveSliderRow(
                             title = stringResource(R.string.settings_right_stick_sensitivity),
                             valueLabelForValue = { "$it%" },
@@ -2214,7 +2530,11 @@ private fun EmulationSidebarMenu(
                         SettingsToggle(
                             title = stringResource(R.string.settings_frame_limiter),
                             checked = uiState.frameLimitEnabled,
-                            onCheckedChange = onSetFrameLimitEnabled,
+                            onCheckedChange = { v ->
+                                if (!(uiState.lanNetplayRestrictFeatures && !v)) {
+                                    onSetFrameLimitEnabled(v)
+                                }
+                            },
                             helpText = stringResource(R.string.settings_help_frame_limiter),
                             onResetToDefault = { onSetFrameLimitEnabled(globalDefaults.frameLimitEnabled) }
                         )
@@ -2291,6 +2611,14 @@ private fun EmulationSidebarMenu(
                             onCheckedChange = onSetEnableCheats,
                             helpText = stringResource(R.string.settings_help_cheats),
                             onResetToDefault = { onSetEnableCheats(globalDefaults.enableCheats) }
+                        )
+
+                        MenuButton(
+                            icon = Icons.Rounded.Edit,
+                            text = stringResource(R.string.emulation_edit_cheats),
+                            onClick = onOpenRuntimePnachEditor,
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            enabled = uiState.isRunning && !uiState.isStarting
                         )
 
                         if (uiState.availableCheats.isNotEmpty()) {
